@@ -63,7 +63,6 @@ class PerformanceMonitor: ObservableObject {
     }
     
     private func getMemoryPressure() -> MemoryPressureLevel {
-        let processInfo = ProcessInfo.processInfo
         // Check system memory pressure
         // This is simplified - in production, use proper memory pressure API
         let memoryUsage = getMemoryUsage()

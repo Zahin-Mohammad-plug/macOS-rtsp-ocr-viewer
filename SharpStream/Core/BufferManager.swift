@@ -44,10 +44,11 @@ actor BufferManager {
     private var bufferIndexPath: URL
     private var indexSaveTask: Task<Void, Never>?
     
-    var bufferSizePreset: BufferSizePreset = .medium {
-        didSet {
-            updateBufferSize()
-        }
+    private(set) var bufferSizePreset: BufferSizePreset = .medium
+    
+    func setBufferSizePreset(_ preset: BufferSizePreset) {
+        bufferSizePreset = preset
+        updateBufferSize()
     }
     
     init() {
@@ -63,16 +64,24 @@ actor BufferManager {
         try? FileManager.default.createDirectory(at: sharpStreamDir, withIntermediateDirectories: true)
         
         // Initialize buffer size based on default preset
+        // Use direct value to avoid actor isolation issues in init
         let fps: Double = 30.0
-        ramBufferMaxSize = Int(BufferSizePreset.medium.duration * fps)
+        let mediumDuration: TimeInterval = 3.0 // BufferSizePreset.medium.duration
+        ramBufferMaxSize = Int(mediumDuration * fps)
         // Note: Timer and file operations will be handled when actor is accessed
     }
     
     private func updateBufferSize() {
         // Calculate max frames based on preset (assuming 30fps)
         let fps: Double = 30.0
-        let preset = bufferSizePreset
-        ramBufferMaxSize = Int(preset.duration * fps)
+        // Access duration directly from the enum case to avoid actor isolation issues
+        let duration: TimeInterval
+        switch bufferSizePreset {
+        case .low: duration = 1.0
+        case .medium: duration = 3.0
+        case .high: duration = 5.0
+        }
+        ramBufferMaxSize = Int(duration * fps)
     }
     
     func addFrame(_ pixelBuffer: CVPixelBuffer, timestamp: Date) {
@@ -105,9 +114,8 @@ actor BufferManager {
     func getFrame(at timestamp: Date, tolerance: TimeInterval = 0.1) -> CVPixelBuffer? {
         // First check RAM buffer
         if let frame = ramBuffer.first(where: { abs($0.timestamp.timeIntervalSince(timestamp)) < tolerance }) {
-            // Return a copy of the pixel buffer to avoid actor isolation issues
-            let pixelBuffer = frame.pixelBuffer
-            return pixelBuffer
+            // Return the pixel buffer - CVPixelBuffer is thread-safe for reading
+            return frame.pixelBuffer
         }
         
         // Then check disk buffer

@@ -115,7 +115,7 @@ struct PreferencesView: View {
         .frame(width: 500, height: 400)
         .onChange(of: ramBufferSize) { _, newValue in
             Task {
-                await appState.bufferManager.bufferSizePreset = newValue
+                await appState.bufferManager.setBufferSizePreset(newValue)
             }
         }
     }
