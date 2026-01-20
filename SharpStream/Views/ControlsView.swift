@@ -7,6 +7,7 @@
 
 import SwiftUI
 import Combine
+import QuartzCore
 
 struct ControlsView: View {
     @EnvironmentObject var appState: AppState
@@ -22,6 +23,8 @@ struct ControlsView: View {
     @State private var seekInProgress = false
     @State private var isUpdatingSliderProgrammatically = false
     @State private var sliderChangeDebounceTimer: Timer?
+    @State private var lastUserSliderValue: TimeInterval = -1
+    @State private var lastSeekCompletionTime: TimeInterval = 0 // Track when seek actually completed
     
     private var player: MPVPlayerWrapper? {
         appState.streamManager.player
@@ -41,20 +44,54 @@ struct ControlsView: View {
                 }
                 .onChange(of: sliderValue) { oldValue, newValue in
                     // Only handle user-initiated changes, not programmatic updates
-                    if !isUpdatingSliderProgrammatically {
-                        // User is dragging the slider
-                        isDraggingSlider = true
-                        
-                        // Cancel any pending seek
-                        sliderChangeDebounceTimer?.invalidate()
-                        
-                        // Debounce the seek - wait for user to stop dragging
-                        sliderChangeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
-                            // User stopped dragging - seek to the position
-                            let targetTime = sliderValue
-                            print("🎚️ Slider released at: \(String(format: "%.1f", targetTime))s")
-                            seek(to: targetTime)
-                            isDraggingSlider = false
+                    // Also don't handle if a seek is already in progress
+                    if !isUpdatingSliderProgrammatically && !seekInProgress {
+                        // Check if this is a significant change (user dragging, not just timer drift)
+                        let change = abs(newValue - oldValue)
+
+                        // Require larger change to avoid reacting to playback position drift
+                        // Especially important for RTSP streams with imprecise seeking
+                        if change > 0.5 {
+                            // User is dragging the slider
+                            isDraggingSlider = true
+                            lastUserSliderValue = newValue
+
+                            // Cancel any pending seek timer
+                            if let existingTimer = sliderChangeDebounceTimer {
+                                existingTimer.invalidate()
+                                sliderChangeDebounceTimer = nil
+                            }
+
+                            // Debounce the seek - wait for user to stop dragging
+                            let targetTime = newValue
+                            sliderChangeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [targetTime] timer in
+                                // Double-check timer is still valid and we haven't started seeking
+                                guard timer.isValid, !self.seekInProgress, self.isDraggingSlider else {
+                                    self.isDraggingSlider = false
+                                    return
+                                }
+
+                                let currentSliderValue = self.sliderValue
+                                let timeSinceLastSeek = CACurrentMediaTime() - self.lastSeekCompletionTime
+
+                                // Only seek if:
+                                // 1. Slider value is still close to target (user stopped dragging)
+                                // 2. Not in middle of programmatic update
+                                // 3. Change is significant enough to warrant a seek
+                                // 4. Enough time has passed since the last seek (prevent rapid loops)
+                                if abs(currentSliderValue - targetTime) < 0.5 &&
+                                   !self.isUpdatingSliderProgrammatically &&
+                                   abs(currentSliderValue - (self.player?.currentTime ?? 0)) > 0.5 &&
+                                   timeSinceLastSeek > 1.5 {
+                                    print("🎚️ Slider released at: \(String(format: "%.1f", currentSliderValue))s")
+                                    self.seek(to: currentSliderValue)
+                                    self.isDraggingSlider = false
+                                    self.lastUserSliderValue = -1
+                                } else {
+                                    // Conditions not met - don't seek, just clear dragging state
+                                    self.isDraggingSlider = false
+                                }
+                            }
                         }
                     }
                 }
@@ -151,19 +188,28 @@ struct ControlsView: View {
                         // Force update by reading property (player should update via events, but we poll as backup)
                         let newTime = player.currentTime
                         let newDuration = player.duration
-                        
+
                         // Update time display and slider if changed
                         if abs(newTime - self.currentTime) > 0.05 || newDuration != self.duration {
                             self.currentTime = newTime
-                            // Only update slider if not being dragged by user
-                            if !self.isDraggingSlider {
-                                self.isUpdatingSliderProgrammatically = true
-                                self.sliderValue = newTime
-                                self.isUpdatingSliderProgrammatically = false
+
+                            // Only update slider if not being dragged by user and not seeking
+                            // Also check if we're in a cooldown period after a seek - if so, use larger threshold
+                            let timeSinceLastSeek = CACurrentMediaTime() - self.lastSeekCompletionTime
+                            let inCooldown = timeSinceLastSeek < 1.5
+                            let sliderThreshold = inCooldown ? 0.3 : 0.1 // Larger threshold during cooldown
+
+                            if !self.isDraggingSlider && !self.seekInProgress {
+                                // Only update if the change is significant to avoid micro-updates triggering onChange
+                                if abs(newTime - self.sliderValue) > sliderThreshold {
+                                    self.isUpdatingSliderProgrammatically = true
+                                    self.sliderValue = newTime
+                                    self.isUpdatingSliderProgrammatically = false
+                                }
                             }
                             self.duration = newDuration
                         }
-                        
+
                         self.isPlaying = player.isPlaying
                         self.playbackSpeed = player.playbackSpeed
                         self.volume = player.volume
@@ -184,6 +230,11 @@ struct ControlsView: View {
     }
     
     private func seek(to time: TimeInterval) {
+        // Don't seek if already seeking
+        if seekInProgress {
+            return
+        }
+        
         // Clamp time to valid range
         let clampedTime = max(0, min(time, max(duration, 1)))
         
@@ -201,6 +252,7 @@ struct ControlsView: View {
         sliderChangeDebounceTimer?.invalidate()
         sliderChangeDebounceTimer = nil
         isDraggingSlider = false
+        lastUserSliderValue = -1
         
         player?.seek(to: clampedTime)
         
@@ -212,22 +264,24 @@ struct ControlsView: View {
         
         // Clear seek flag after a delay to allow seek to complete
         // RTSP streams may have imprecise seeking, so we wait a bit longer
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            self.seekInProgress = false
-            // Force an update to sync with actual position
-            if let player = self.player {
-                let actualTime = player.currentTime
-                // Only update if significantly different (account for imprecise seeking)
-                if abs(actualTime - self.lastSeekTime) > 1.0 {
-                    print("⚠️ Seek imprecise - requested \(String(format: "%.1f", self.lastSeekTime))s, got \(String(format: "%.1f", actualTime))s")
-                    // Update to actual position (RTSP streams may not support frame-accurate seeking)
-                    self.currentTime = actualTime
-                    self.isUpdatingSliderProgrammatically = true
-                    self.sliderValue = actualTime
-                    self.isUpdatingSliderProgrammatically = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            // Only update if lastSeekTime is still valid (not reset)
+            if self.lastSeekTime >= 0 {
+                if let player = self.player {
+                    let actualTime = player.currentTime
+                    // Only log if significantly different (account for imprecise seeking)
+                    // But DON'T update slider - let the timer handle it naturally to avoid loops
+                    if abs(actualTime - self.lastSeekTime) > 1.0 {
+                        print("⚠️ Seek imprecise - requested \(String(format: "%.1f", self.lastSeekTime))s, got \(String(format: "%.1f", actualTime))s")
+                        // Just update currentTime, not sliderValue - let timer update slider naturally
+                        self.currentTime = actualTime
+                    }
                 }
+                self.lastSeekTime = -1
             }
-            self.lastSeekTime = -1
+            // Clear seek flag to allow new seeks and record completion time
+            self.seekInProgress = false
+            self.lastSeekCompletionTime = CACurrentMediaTime()
         }
     }
     
