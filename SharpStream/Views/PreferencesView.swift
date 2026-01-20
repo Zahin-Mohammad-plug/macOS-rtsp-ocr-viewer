@@ -15,6 +15,8 @@ struct PreferencesView: View {
     @AppStorage("focusAlgorithm") private var focusAlgorithm: String = "Laplacian"
     @AppStorage("autoOCROnSmartPause") private var autoOCROnSmartPause: Bool = true
     @AppStorage("ocrLanguage") private var ocrLanguage: String = "en-US"
+    @AppStorage("defaultExportFormat") private var defaultExportFormat: String = "PNG"
+    @AppStorage("defaultJPEGQuality") private var defaultJPEGQuality: Double = 0.8
     
     private var ramBufferSize: BufferSizePreset {
         get { BufferSizePreset(rawValue: ramBufferSizeRaw) ?? .medium }
@@ -132,13 +134,52 @@ struct PreferencesView: View {
             // Export Settings
             Form {
                 Section("Export Format") {
-                    // Export format preferences would go here
-                    Text("Export settings")
-                        .foregroundColor(.secondary)
+                    Picker("Default Format", selection: $defaultExportFormat) {
+                        Text("PNG").tag("PNG")
+                        Text("JPEG").tag("JPEG")
+                    }
+                    .help("Default format for frame exports")
+                    
+                    if defaultExportFormat == "JPEG" {
+                        Slider(value: $defaultJPEGQuality, in: 0.1...1.0, step: 0.1) {
+                            Text("JPEG Quality")
+                        } minimumValueLabel: {
+                            Text("Low")
+                        } maximumValueLabel: {
+                            Text("High")
+                        }
+                        
+                        Text("\(defaultJPEGQuality, specifier: "%.1f")")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                    }
                 }
             }
             .tabItem {
                 Label("Export", systemImage: "square.and.arrow.down")
+            }
+            
+            // Keyboard Shortcuts
+            Form {
+                Section("Keyboard Shortcuts") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ShortcutRow(name: "Play/Pause", shortcut: "Space")
+                        ShortcutRow(name: "Rewind 10s", shortcut: "⌘←")
+                        ShortcutRow(name: "Forward 10s", shortcut: "⌘→")
+                        ShortcutRow(name: "Frame Backward", shortcut: "←")
+                        ShortcutRow(name: "Frame Forward", shortcut: "→")
+                        ShortcutRow(name: "Smart Pause", shortcut: "⌘S")
+                        ShortcutRow(name: "Paste Stream URL", shortcut: "⌘⇧N")
+                        ShortcutRow(name: "Toggle Fullscreen", shortcut: "⌘⌃F")
+                    }
+                    
+                    Text("Keyboard shortcuts customization coming soon")
+                        .foregroundColor(.secondary)
+                        .font(.caption)
+                }
+            }
+            .tabItem {
+                Label("Shortcuts", systemImage: "keyboard")
             }
         }
         .frame(width: 500, height: 400)
@@ -147,6 +188,25 @@ struct PreferencesView: View {
             if let algo = FocusAlgorithm(rawValue: focusAlgorithm) {
                 appState.focusScorer.setAlgorithm(algo)
             }
+        }
+    }
+}
+
+struct ShortcutRow: View {
+    let name: String
+    let shortcut: String
+    
+    var body: some View {
+        HStack {
+            Text(name)
+            Spacer()
+            Text(shortcut)
+                .foregroundColor(.secondary)
+                .font(.system(.body, design: .monospaced))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(4)
         }
     }
 }

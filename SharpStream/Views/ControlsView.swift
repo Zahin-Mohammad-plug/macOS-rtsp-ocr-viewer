@@ -15,6 +15,13 @@ struct ControlsView: View {
     @State private var duration: TimeInterval = 0
     @State private var playbackSpeed: Double = 1.0
     @State private var volume: Double = 1.0
+    @State private var isDraggingSlider = false
+    @State private var sliderValue: TimeInterval = 0
+    @State private var timerCancellable: AnyCancellable?
+    @State private var lastSeekTime: TimeInterval = -1
+    @State private var seekInProgress = false
+    @State private var isUpdatingSliderProgrammatically = false
+    @State private var sliderChangeDebounceTimer: Timer?
     
     private var player: MPVPlayerWrapper? {
         appState.streamManager.player
@@ -23,15 +30,38 @@ struct ControlsView: View {
     var body: some View {
         VStack(spacing: 12) {
             // Timeline scrubber
-            Slider(value: $currentTime, in: 0...max(duration, 1)) {
-                Text("Timeline")
-            } minimumValueLabel: {
-                Text(formatTime(0))
-            } maximumValueLabel: {
+            // Display current time on left, duration on right
+            HStack {
+                Text(formatTime(currentTime))
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 60, alignment: .leading)
+                
+                Slider(value: $sliderValue, in: 0...max(duration, 1)) {
+                    Text("Timeline")
+                }
+                .onChange(of: sliderValue) { oldValue, newValue in
+                    // Only handle user-initiated changes, not programmatic updates
+                    if !isUpdatingSliderProgrammatically {
+                        // User is dragging the slider
+                        isDraggingSlider = true
+                        
+                        // Cancel any pending seek
+                        sliderChangeDebounceTimer?.invalidate()
+                        
+                        // Debounce the seek - wait for user to stop dragging
+                        sliderChangeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
+                            // User stopped dragging - seek to the position
+                            let targetTime = sliderValue
+                            print("🎚️ Slider released at: \(String(format: "%.1f", targetTime))s")
+                            seek(to: targetTime)
+                            isDraggingSlider = false
+                        }
+                    }
+                }
+                
                 Text(formatTime(duration))
-            }
-            .onChange(of: currentTime) { _, newValue in
-                seek(to: newValue)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 60, alignment: .trailing)
             }
             
             HStack {
@@ -107,50 +137,122 @@ struct ControlsView: View {
                 }
             }
         }
+        .onAppear {
+            // Initial sync with player state
+            updatePlayerState()
+            
+            // Start timer to update player state - poll directly from player
+            timerCancellable = Timer.publish(every: 0.1, on: .main, in: .common)
+                .autoconnect()
+                .sink { _ in
+                    // Update from player periodically (every 0.1 seconds)
+                    // Force player to update its currentTime property first
+                    if let player = self.player, !self.isDraggingSlider, !self.seekInProgress {
+                        // Force update by reading property (player should update via events, but we poll as backup)
+                        let newTime = player.currentTime
+                        let newDuration = player.duration
+                        
+                        // Update time display and slider if changed
+                        if abs(newTime - self.currentTime) > 0.05 || newDuration != self.duration {
+                            self.currentTime = newTime
+                            // Only update slider if not being dragged by user
+                            if !self.isDraggingSlider {
+                                self.isUpdatingSliderProgrammatically = true
+                                self.sliderValue = newTime
+                                self.isUpdatingSliderProgrammatically = false
+                            }
+                            self.duration = newDuration
+                        }
+                        
+                        self.isPlaying = player.isPlaying
+                        self.playbackSpeed = player.playbackSpeed
+                        self.volume = player.volume
+                    }
+                }
+        }
+        .onDisappear {
+            // Stop timer when view disappears
+            timerCancellable?.cancel()
+            timerCancellable = nil
+            sliderChangeDebounceTimer?.invalidate()
+            sliderChangeDebounceTimer = nil
+        }
     }
     
     private func togglePlayPause() {
         player?.togglePlayPause()
-        isPlaying.toggle()
     }
     
     private func seek(to time: TimeInterval) {
-        player?.seek(to: time)
-        currentTime = time
+        // Clamp time to valid range
+        let clampedTime = max(0, min(time, max(duration, 1)))
+        
+        // Only seek if the change is significant (avoid micro-seeks)
+        let currentPlayerTime = player?.currentTime ?? 0
+        if abs(clampedTime - currentPlayerTime) < 0.1 {
+            return // Too small a change, skip
+        }
+        
+        // Set flag to prevent timer from overwriting during seek
+        seekInProgress = true
+        lastSeekTime = clampedTime
+        
+        // Cancel any pending slider debounce timer
+        sliderChangeDebounceTimer?.invalidate()
+        sliderChangeDebounceTimer = nil
+        isDraggingSlider = false
+        
+        player?.seek(to: clampedTime)
+        
+        // Update local state immediately for UI responsiveness
+        currentTime = clampedTime
+        isUpdatingSliderProgrammatically = true
+        sliderValue = clampedTime
+        isUpdatingSliderProgrammatically = false
+        
+        // Clear seek flag after a delay to allow seek to complete
+        // RTSP streams may have imprecise seeking, so we wait a bit longer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            self.seekInProgress = false
+            // Force an update to sync with actual position
+            if let player = self.player {
+                let actualTime = player.currentTime
+                // Only update if significantly different (account for imprecise seeking)
+                if abs(actualTime - self.lastSeekTime) > 1.0 {
+                    print("⚠️ Seek imprecise - requested \(String(format: "%.1f", self.lastSeekTime))s, got \(String(format: "%.1f", actualTime))s")
+                    // Update to actual position (RTSP streams may not support frame-accurate seeking)
+                    self.currentTime = actualTime
+                    self.isUpdatingSliderProgrammatically = true
+                    self.sliderValue = actualTime
+                    self.isUpdatingSliderProgrammatically = false
+                }
+            }
+            self.lastSeekTime = -1
+        }
     }
     
     private func seek(offset: TimeInterval) {
-        let newTime = max(0, min(duration, currentTime + offset))
+        // Read actual current time from player, not local state (which may be stale)
+        guard let player = player else { return }
+        let actualCurrentTime = player.currentTime
+        let newTime = max(0, min(duration, actualCurrentTime + offset))
         seek(to: newTime)
     }
     
     private func stepFrame(backward: Bool) {
         player?.stepFrame(backward: backward)
-        // Update current time after frame step
-        if let player = player {
-            // Get updated time from player
-            // For now, estimate based on frame rate
-            let frameDuration = 1.0 / (appState.streamManager.streamStats.frameRate ?? 30.0)
-            if backward {
-                currentTime = max(0, currentTime - frameDuration)
-            } else {
-                currentTime = min(duration, currentTime + frameDuration)
-            }
-        }
+        // Time will be updated via onReceive when player updates
     }
     
     private func updatePlayerState() {
-        // Observe player state changes via Combine
-        // The player's @Published properties will automatically update this view
-        if let player = player {
-            // Use Combine to observe player state
-            // For now, update directly from player properties
-            currentTime = player.currentTime
-            isPlaying = player.isPlaying
-            duration = player.duration
-            playbackSpeed = player.playbackSpeed
-            volume = player.volume
-        }
+        // Initial sync with player state on appear
+        guard let player = player else { return }
+        currentTime = player.currentTime
+        sliderValue = player.currentTime
+        isPlaying = player.isPlaying
+        duration = player.duration
+        playbackSpeed = player.playbackSpeed
+        volume = player.volume
     }
     
     private func performSmartPause() {
@@ -187,12 +289,12 @@ struct ControlsView: View {
     
     private func setPlaybackSpeed(_ speed: Double) {
         player?.setSpeed(speed)
-        playbackSpeed = speed
+        // Speed will be updated via onReceive when player updates
     }
     
     private func setVolume(_ volume: Double) {
         player?.setVolume(volume)
-        self.volume = volume
+        // Volume will be updated via onReceive when player updates
     }
     
     private func formatTime(_ time: TimeInterval) -> String {

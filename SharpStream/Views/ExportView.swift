@@ -11,6 +11,8 @@ import AppKit
 
 struct ExportView: View {
     @EnvironmentObject var appState: AppState
+    @AppStorage("defaultExportFormat") private var defaultExportFormat: String = "PNG"
+    @AppStorage("defaultJPEGQuality") private var defaultJPEGQuality: Double = 0.8
     @State private var showSavePanel = false
     @State private var exportFormat: ExportFormat = .png
     @State private var jpegQuality: Double = 0.8
@@ -46,6 +48,20 @@ struct ExportView: View {
         }
         .onChange(of: appState.currentOCRResult) { oldValue, newValue in
             currentOCRResult = newValue
+        }
+        .onAppear {
+            // Initialize from preferences
+            jpegQuality = defaultJPEGQuality
+            exportFormat = defaultExportFormat == "JPEG" ? .jpeg(quality: CGFloat(defaultJPEGQuality)) : .png
+        }
+        .onChange(of: defaultExportFormat) { _, newValue in
+            exportFormat = newValue == "JPEG" ? .jpeg(quality: CGFloat(defaultJPEGQuality)) : .png
+        }
+        .onChange(of: defaultJPEGQuality) { _, newValue in
+            jpegQuality = newValue
+            if case .jpeg = exportFormat {
+                exportFormat = .jpeg(quality: CGFloat(newValue))
+            }
         }
     }
     

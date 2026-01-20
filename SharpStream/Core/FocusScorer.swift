@@ -31,14 +31,16 @@ class FocusScorer: ObservableObject {
         let score: Double
         
         if useOpenCV, let openCVScorer = openCVScorer {
-            let openCVScore = openCVScorer.calculateScore(pixelBuffer)
+            let openCVScore = openCVScorer.calculateScore(pixelBuffer, algorithm: algorithm)
             // If OpenCV returns 0, it might mean it's not available, fall back to Swift
             if openCVScore > 0 {
                 score = openCVScore
             } else {
+                // Fall back to Swift-native (only Laplacian is implemented in Swift)
                 score = swiftScorer.calculateScore(pixelBuffer)
             }
         } else {
+            // Use Swift-native (only Laplacian is implemented in Swift)
             score = swiftScorer.calculateScore(pixelBuffer)
         }
         
@@ -83,14 +85,13 @@ class FocusScorer: ObservableObject {
     
     func setAlgorithm(_ algorithm: FocusAlgorithm) {
         self.algorithm = algorithm
-        // Algorithm selection affects which scorer is used
-        // Currently only Laplacian is implemented, but structure is ready for Tenengrad/Sobel
+        // All algorithms now implemented in OpenCV
+        // Tenengrad and Sobel require OpenCV, Laplacian can fall back to Swift-native
         switch algorithm {
         case .laplacian:
             useOpenCV = true // Use OpenCV if available, otherwise Swift-native
         case .tenengrad, .sobel:
-            // TODO: Implement Tenengrad and Sobel algorithms
-            useOpenCV = true
+            useOpenCV = true // Tenengrad and Sobel require OpenCV
         }
     }
 }

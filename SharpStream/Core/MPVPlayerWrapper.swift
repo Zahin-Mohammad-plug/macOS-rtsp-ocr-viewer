@@ -49,6 +49,9 @@ class MPVPlayerWrapper: ObservableObject {
     @Published var volume: Double = 1.0
     
     private var metadataUpdateTimer: Timer?
+    private var timeUpdateErrorCount = 0 // Track errors for logging
+    private var eventLogCount = 0 // Track event logging to avoid spam
+    private var lastSeekTime: TimeInterval = -1 // Track last seek attempt to detect failures
     
     // MARK: - Initialization
     
@@ -268,6 +271,12 @@ class MPVPlayerWrapper: ObservableObject {
         case MPV_EVENT_FILE_LOADED:
             DispatchQueue.main.async { [weak self] in
                 self?.updateDuration()
+                // Start frame extraction once stream is loaded
+                self?.startFrameExtraction()
+                // Force initial time update after a short delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self?.updateCurrentTime()
+                }
             }
             
         case MPV_EVENT_PROPERTY_CHANGE:
@@ -284,10 +293,28 @@ class MPVPlayerWrapper: ObservableObject {
                 self?.isPlaying = false
             }
             
+        case MPV_EVENT_SEEK:
+            // Seek event - update time after seek completes
+            print("📍 MPV_EVENT_SEEK received")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.updateCurrentTime()
+            }
+            
+        case MPV_EVENT_PLAYBACK_RESTART:
+            // Playback restarted - update time
+            print("🔄 MPV_EVENT_PLAYBACK_RESTART received")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.updateCurrentTime()
+            }
+            
         default:
-            // Log unknown events for debugging
+            // Log unknown events for debugging (but not constantly)
             if eventId != MPV_EVENT_NONE {
-                print("MPV Event: \(eventId)")
+                // Only log occasionally to avoid spam
+                eventLogCount += 1
+                if eventLogCount % 50 == 0 {
+                    print("MPV Event: \(eventId)")
+                }
             }
             break
         }
@@ -301,7 +328,10 @@ class MPVPlayerWrapper: ObservableObject {
             case "playback-time":
                 if property.format == MPV_FORMAT_DOUBLE {
                     let time = data.bindMemory(to: Double.self, capacity: 1).pointee
-                    self?.currentTime = time
+                    // Only update if time is valid and changed
+                    if time >= 0 && abs(self?.currentTime ?? -1 - time) > 0.01 {
+                        self?.currentTime = time
+                    }
                 }
                 
             case "duration":
@@ -455,10 +485,101 @@ class MPVPlayerWrapper: ObservableObject {
     func seek(to time: TimeInterval) {
         #if canImport(Libmpv)
         guard let handle = mpvHandle else { return }
-        let command = "seek \(time) absolute"
-        mpv_command_string(handle, command)
-        DispatchQueue.main.async { [weak self] in
-            self?.currentTime = time
+        
+        // Clamp time to valid range
+        let clampedTime = max(0, min(time, duration > 0 ? duration : time))
+        
+        // Check if this is a significant change (avoid micro-seeks)
+        let currentPlayerTime = self.currentTime
+        if abs(clampedTime - currentPlayerTime) < 0.1 {
+            return // Too small a change, skip
+        }
+        
+        print("🎯 Seeking to: \(String(format: "%.1f", clampedTime))s (current: \(String(format: "%.1f", currentPlayerTime))s)")
+        
+        // For streams with known duration, use percentage-based seeking for better accuracy
+        // For streams without duration (live streams), use absolute time
+        var seekSucceeded = false
+        
+        if duration > 0 {
+            let percentage = (clampedTime / duration) * 100.0
+            let command = "seek \(percentage) absolute-percent"
+            let result = mpv_command_string(handle, command)
+            
+            if result == 0 {
+                seekSucceeded = true
+                print("✅ Seek command succeeded (percentage: \(String(format: "%.2f", percentage))%)")
+            } else {
+                // Log error
+                let errorString = mpv_error_string(result)
+                let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
+                print("⚠️ Percentage seek failed: \(result) (\(error)), trying absolute time")
+                
+                // Fallback to absolute time
+                let fallbackCommand = "seek \(clampedTime) absolute"
+                let fallbackResult = mpv_command_string(handle, fallbackCommand)
+                if fallbackResult == 0 {
+                    seekSucceeded = true
+                    print("✅ Fallback absolute seek succeeded")
+                } else {
+                    let fallbackErrorString = mpv_error_string(fallbackResult)
+                    let fallbackError = fallbackErrorString != nil ? String(cString: fallbackErrorString!) : "Unknown error"
+                    print("❌ Absolute seek also failed: \(fallbackResult) (\(fallbackError))")
+                    // Don't update UI if seek failed - let it stay at current position
+                    return
+                }
+            }
+        } else {
+            // No duration available (live stream), use absolute time
+            let command = "seek \(clampedTime) absolute"
+            let result = mpv_command_string(handle, command)
+            
+            if result == 0 {
+                seekSucceeded = true
+                print("✅ Seek command succeeded (absolute time)")
+            } else {
+                let errorString = mpv_error_string(result)
+                let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
+                print("❌ Seek failed: \(result) (\(error))")
+                // Don't update UI if seek failed
+                return
+            }
+        }
+        
+        // Only update UI if seek command succeeded
+        if seekSucceeded {
+            lastSeekTime = clampedTime
+            // Update currentTime immediately for UI responsiveness
+            DispatchQueue.main.async { [weak self] in
+                self?.currentTime = clampedTime
+            }
+            
+            // Force multiple updates after seek to ensure we get the actual position
+            // Sometimes MPV needs a moment to process the seek
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.updateCurrentTime()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.updateCurrentTime()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.updateCurrentTime()
+                // After 0.5s, check if seek actually worked
+                if let self = self, self.lastSeekTime >= 0 {
+                    let actualTime = self.currentTime
+                    if abs(actualTime - self.lastSeekTime) > 2.0 {
+                        print("⚠️ Seek may have failed - requested \(String(format: "%.1f", self.lastSeekTime))s but got \(String(format: "%.1f", actualTime))s")
+                    }
+                    self.lastSeekTime = -1 // Reset
+                }
+            }
+        } else {
+            // Seek failed - don't update UI, keep current position
+            print("⚠️ Seek failed - keeping current position: \(String(format: "%.1f", currentPlayerTime))s")
+            // Force a time update to ensure we're still reading correctly
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.updateCurrentTime()
+            }
         }
         #endif
     }
@@ -509,13 +630,18 @@ class MPVPlayerWrapper: ObservableObject {
     
     /// Set callback for frame extraction
     /// - Parameter callback: Called with CVPixelBuffer and timestamp for each extracted frame
+    /// Note: Frame extraction runs at 1 FPS to avoid excessive screenshot commands
     func setFrameCallback(_ callback: @escaping (CVPixelBuffer, Date) -> Void) {
         frameCallback = callback
-        startFrameExtraction()
+        // Don't start extraction immediately - wait for stream to be ready
+        // startFrameExtraction() will be called when stream is loaded
     }
     
-    private func startFrameExtraction() {
+    func startFrameExtraction() {
         stopFrameExtraction()
+        
+        // Only start if we have a callback and handle
+        guard frameCallback != nil, mpvHandle != nil else { return }
         
         frameExtractionTimer = Timer.scheduledTimer(withTimeInterval: frameExtractionInterval, repeats: true) { [weak self] _ in
             self?.extractCurrentFrame()
@@ -528,8 +654,9 @@ class MPVPlayerWrapper: ObservableObject {
     }
     
     private func extractCurrentFrame() {
-        guard let handle = mpvHandle,
-              let callback = frameCallback else { return }
+        guard mpvHandle != nil,
+              let callback = frameCallback,
+              isPlaying else { return } // Only extract when playing
         
         // Get current frame using screenshot API (simpler approach)
         // Note: This is a placeholder - actual implementation would use render context
@@ -541,23 +668,61 @@ class MPVPlayerWrapper: ObservableObject {
     }
     
     private func extractFrameViaScreenshot(callback: @escaping (CVPixelBuffer, Date) -> Void) {
-        // This is a simplified approach using screenshot
-        // Better approach would be to use render context directly
+        #if canImport(Libmpv)
         guard let handle = mpvHandle else { return }
+        
+        // Check if stream is actually loaded and playing
+        var pauseFlag: Int32 = 1
+        let pauseFormat = MPV_FORMAT_FLAG
+        mpv_get_property(handle, "pause", pauseFormat, &pauseFlag)
+        
+        // Don't extract if paused or not ready
+        if pauseFlag != 0 {
+            return
+        }
         
         // Get current playback time for timestamp
         var time: Double = 0
         let format = MPV_FORMAT_DOUBLE
         mpv_get_property(handle, "playback-time", format, &time)
         
+        // Don't extract if time is 0 (stream not started)
+        if time <= 0 {
+            return
+        }
+        
         let timestamp = Date()
         
-        // For now, return a placeholder
-        // TODO: Implement actual frame extraction using render context
-        // This requires setting up mpv_render_context with proper parameters
+        // Use screenshot command to extract frame to temporary file
+        let tempDir = FileManager.default.temporaryDirectory
+        let screenshotPath = tempDir.appendingPathComponent("mpv_screenshot_\(UUID().uuidString).png")
         
-        // Placeholder: Create empty pixel buffer
-        // In production, extract actual frame from MPVKit
+        // Execute screenshot command (screenshot-to-file is async, so we need to wait)
+        let command = "screenshot-to-file \"\(screenshotPath.path)\" png"
+        let result = mpv_command_string(handle, command)
+        
+        guard result == 0 else {
+            // Error -4 typically means command queue is full or command failed
+            // Silently fail - don't spam console with errors
+            return
+        }
+        
+        // Wait for file to be written (screenshot is async)
+        // Check multiple times with increasing delays
+        var attempts = 0
+        let maxAttempts = 20 // 2 seconds max wait
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+            attempts += 1
+            if FileManager.default.fileExists(atPath: screenshotPath.path) || attempts >= maxAttempts {
+                timer.invalidate()
+                if FileManager.default.fileExists(atPath: screenshotPath.path) {
+                    self?.loadScreenshotAsPixelBuffer(from: screenshotPath, timestamp: timestamp, callback: callback)
+                }
+            }
+        }
+        #else
+        // Fallback: create empty placeholder
+        let timestamp = Date()
         var pixelBuffer: CVPixelBuffer?
         let status = CVPixelBufferCreate(
             kCFAllocatorDefault,
@@ -570,22 +735,225 @@ class MPVPlayerWrapper: ObservableObject {
         if status == kCVReturnSuccess, let buffer = pixelBuffer {
             callback(buffer, timestamp)
         }
+        #endif
+    }
+    
+    private func loadScreenshotAsPixelBuffer(from url: URL, timestamp: Date, callback: @escaping (CVPixelBuffer, Date) -> Void) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("⚠️ Screenshot file not found: \(url.path)")
+            return
+        }
+        
+        // Load image from file
+        guard let image = NSImage(contentsOf: url) else {
+            print("⚠️ Failed to load screenshot image")
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        
+        // Convert NSImage to CVPixelBuffer
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            print("⚠️ Failed to get CGImage from screenshot")
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        
+        // Create CVPixelBuffer from CGImage
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue!,
+             kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!] as CFDictionary,
+            &pixelBuffer
+        )
+        
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
+            print("⚠️ Failed to create CVPixelBuffer")
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        
+        // Lock and copy image data
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        
+        let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer),
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        )
+        
+        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Clean up temp file
+        try? FileManager.default.removeItem(at: url)
+        
+        // Call callback with extracted frame
+        callback(buffer, timestamp)
     }
     
     /// Get current frame as CVPixelBuffer (synchronous)
+    /// Note: This is a blocking operation that uses screenshot command
     func getCurrentFrame() -> CVPixelBuffer? {
-        // Placeholder implementation
-        // In production, use render context to extract frame
+        #if canImport(Libmpv)
+        guard let handle = mpvHandle else { return nil }
+        
+        // Use screenshot command to extract frame
+        let tempDir = FileManager.default.temporaryDirectory
+        let screenshotPath = tempDir.appendingPathComponent("mpv_frame_\(UUID().uuidString).png")
+        
+        let command = "screenshot-to-file \"\(screenshotPath.path)\" png"
+        let result = mpv_command_string(handle, command)
+        
+        guard result == 0 else { return nil }
+        
+        // Wait for file (with timeout)
+        var attempts = 0
+        while !FileManager.default.fileExists(atPath: screenshotPath.path) && attempts < 10 {
+            Thread.sleep(forTimeInterval: 0.05)
+            attempts += 1
+        }
+        
+        guard FileManager.default.fileExists(atPath: screenshotPath.path),
+              let image = NSImage(contentsOf: screenshotPath),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            try? FileManager.default.removeItem(at: screenshotPath)
+            return nil
+        }
+        
+        // Convert to CVPixelBuffer
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue!,
+             kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!] as CFDictionary,
+            &pixelBuffer
+        )
+        
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
+            try? FileManager.default.removeItem(at: screenshotPath)
+            return nil
+        }
+        
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        
+        let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer),
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        )
+        
+        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        try? FileManager.default.removeItem(at: screenshotPath)
+        return buffer
+        #else
         return nil
+        #endif
     }
     
     // MARK: - Metadata Extraction
     
     private func startMetadataUpdateTimer() {
-        // Update duration less frequently to avoid excessive logging
-        metadataUpdateTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        stopMetadataUpdateTimer() // Stop any existing timer
+        
+        // Update duration and currentTime periodically
+        metadataUpdateTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.updateDuration()
+            self?.updateCurrentTime()
         }
+        
+        // Verify timer was created
+        if metadataUpdateTimer == nil {
+            print("❌ ERROR: Failed to create metadata update timer")
+        } else {
+            print("✅ Metadata update timer started")
+        }
+    }
+    
+    private func updateCurrentTime() {
+        #if canImport(Libmpv)
+        guard let handle = mpvHandle else { return }
+        var time: Double = 0
+        let format = MPV_FORMAT_DOUBLE
+        
+        // Try playback-time first (most reliable)
+        var result = mpv_get_property(handle, "playback-time", format, &time)
+        
+        // If that fails, try time-pos (alternative property name)
+        if result != 0 {
+            result = mpv_get_property(handle, "time-pos", format, &time)
+        }
+        
+        // Also try position property (percentage-based, 0.0 to 100.0)
+        if result != 0 && duration > 0 {
+            var position: Double = 0
+            let posResult = mpv_get_property(handle, "percent-pos", format, &position)
+            if posResult == 0 && position >= 0 {
+                // Convert percentage to time
+                time = (position / 100.0) * duration
+                result = 0 // Success
+            }
+        }
+        
+        // For live streams without duration, try to get elapsed time since start
+        if result != 0 {
+            // Try to get time-pos which works for live streams
+            result = mpv_get_property(handle, "time-pos", format, &time)
+        }
+        
+        if result == 0 && time >= 0 {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                // Only update if value actually changed to avoid unnecessary UI updates
+                let oldTime = self.currentTime
+                if abs(oldTime - time) > 0.01 {
+                    self.currentTime = time
+                    // Log first successful update and updates after seeks
+                    if oldTime == 0 && time > 0 {
+                        print("✅ Time update working: \(String(format: "%.1f", time))s (duration: \(String(format: "%.1f", self.duration))s)")
+                    } else if abs(oldTime - time) > 1.0 {
+                        // Significant time change (likely after seek)
+                        print("⏱️ Time updated: \(String(format: "%.1f", oldTime))s → \(String(format: "%.1f", time))s")
+                    }
+                } else if time == 0 && oldTime > 0 {
+                    // Time reset to 0 - this might indicate a problem
+                    print("⚠️ Time reset to 0 (was \(String(format: "%.1f", oldTime))s) - stream may have restarted")
+                }
+            }
+        } else {
+            // Log error for debugging (only occasionally to avoid spam)
+            timeUpdateErrorCount += 1
+            if timeUpdateErrorCount == 1 || timeUpdateErrorCount % 100 == 0 { // Log first error and every 100th
+                let errorString = mpv_error_string(result)
+                let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
+                print("⚠️ Failed to read playback-time: \(result) (\(error))")
+                print("   Attempted: playback-time, time-pos, percent-pos")
+                print("   Duration: \(duration), isPlaying: \(isPlaying), isInitialized: \(isInitialized)")
+            }
+        }
+        #endif
     }
     
     private func stopMetadataUpdateTimer() {
@@ -682,6 +1050,8 @@ private let MPV_EVENT_SHUTDOWN: UInt32 = 1
 private let MPV_EVENT_FILE_LOADED: UInt32 = 8
 private let MPV_EVENT_PROPERTY_CHANGE: UInt32 = 14
 private let MPV_EVENT_END_FILE: UInt32 = 6
+private let MPV_EVENT_SEEK: UInt32 = 3
+private let MPV_EVENT_PLAYBACK_RESTART: UInt32 = 21
 
 // Placeholder C API functions - these won't work without MPVKit
 private func mpv_create() -> OpaquePointer? { return nil }

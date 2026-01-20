@@ -139,6 +139,7 @@ struct MainWindow: View {
     }
     
     private func saveWindowState() {
+        // Only save window size (position is not persisted)
         if let window = NSApplication.shared.windows.first {
             savedWidth = Double(window.frame.width)
             savedHeight = Double(window.frame.height)
@@ -146,8 +147,8 @@ struct MainWindow: View {
     }
     
     private func restoreWindowState() {
-        // Window size is restored via @AppStorage in frame modifier
-        // Position restoration would require additional code
+        // Window size is restored via @AppStorage in frame modifier (line 64)
+        // Position is not persisted - window will use system default position
     }
     
     private func setupWindowConstraints() {

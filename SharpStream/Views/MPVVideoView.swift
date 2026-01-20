@@ -42,6 +42,9 @@ class MPVVideoNSView: NSView {
         }
     }
     
+    private var layoutUpdateTimer: Timer?
+    private var windowObserver: NSObjectProtocol?
+    
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setupView()
@@ -50,6 +53,13 @@ class MPVVideoNSView: NSView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupView()
+    }
+    
+    deinit {
+        layoutUpdateTimer?.invalidate()
+        if let observer = windowObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     private func setupView() {
@@ -89,19 +99,36 @@ class MPVVideoNSView: NSView {
     
     override func layout() {
         super.layout()
-
-        // Update Metal layer drawable size when view resizes
-        // Only update if view has valid non-zero bounds
-        if let metalLayer = layer as? CAMetalLayer, bounds.width > 0 && bounds.height > 0 {
-            let scale = metalLayer.contentsScale
-            let newDrawableSize = CGSize(
-                width: bounds.width * scale,
-                height: bounds.height * scale
-            )
-
-            // Only update if size actually changed to avoid unnecessary updates
-            if abs(metalLayer.drawableSize.width - newDrawableSize.width) > 1.0 ||
-               abs(metalLayer.drawableSize.height - newDrawableSize.height) > 1.0 {
+        
+        // Cancel pending update
+        layoutUpdateTimer?.invalidate()
+        
+        // Debounce rapid updates during window movement
+        layoutUpdateTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
+            self?.updateMetalLayerSize()
+        }
+    }
+    
+    private func updateMetalLayerSize() {
+        guard let metalLayer = layer as? CAMetalLayer,
+              bounds.width > 0 && bounds.height > 0,
+              window != nil else {
+            return
+        }
+        
+        let scale = metalLayer.contentsScale
+        let newDrawableSize = CGSize(
+            width: max(1, bounds.width * scale),
+            height: max(1, bounds.height * scale)
+        )
+        
+        // Only update if size actually changed significantly
+        let widthDiff = abs(metalLayer.drawableSize.width - newDrawableSize.width)
+        let heightDiff = abs(metalLayer.drawableSize.height - newDrawableSize.height)
+        
+        if widthDiff > 2.0 || heightDiff > 2.0 {
+            // Update on main thread to ensure synchronization
+            DispatchQueue.main.async {
                 metalLayer.drawableSize = newDrawableSize
             }
         }
@@ -109,9 +136,59 @@ class MPVVideoNSView: NSView {
     
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil {
+        
+        if let window = window {
+            // Update scale for current screen
+            if let metalLayer = layer as? CAMetalLayer {
+                metalLayer.contentsScale = window.screen?.backingScaleFactor ?? 1.0
+            }
+            
             // View is now in a window, can set up rendering
             setupRendering()
+            
+            // Observe window dragging
+            observeWindowDragging()
+        } else {
+            // View removed from window, clean up observers
+            if let observer = windowObserver {
+                NotificationCenter.default.removeObserver(observer)
+                windowObserver = nil
+            }
+        }
+    }
+    
+    private func observeWindowDragging() {
+        guard let window = window else { return }
+        
+        // Remove existing observer if any
+        if let observer = windowObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        
+        // Observe window frame changes to detect dragging
+        windowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            // Window moved - debounce layout update
+            self?.scheduleLayoutUpdate()
+        }
+        
+        // Also observe window resize
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleLayoutUpdate()
+        }
+    }
+    
+    private func scheduleLayoutUpdate() {
+        layoutUpdateTimer?.invalidate()
+        layoutUpdateTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+            self?.updateMetalLayerSize()
         }
     }
 }
