@@ -7,19 +7,20 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		9A9A3B252F1F75B2006D9BD3 /* Sharp Stream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Sharp Stream.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		9A3840662F1F779100EF3DBB /* SharpStream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SharpStream.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9A3D91542F1F7B7A0038B961 /* SharpStream.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = SharpStream.xcodeproj; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		9A9A3B272F1F75B2006D9BD3 /* Sharp Stream */ = {
+		9A3840682F1F779100EF3DBB /* SharpStream */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "Sharp Stream";
+			path = SharpStream;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		9A9A3B222F1F75B2006D9BD3 /* Frameworks */ = {
+		9A3840632F1F779100EF3DBB /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -29,83 +30,97 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		9A9A3B1C2F1F75B2006D9BD3 = {
+		9A38405D2F1F779100EF3DBB = {
 			isa = PBXGroup;
 			children = (
-				9A9A3B272F1F75B2006D9BD3 /* Sharp Stream */,
-				9A9A3B262F1F75B2006D9BD3 /* Products */,
+				9A3840682F1F779100EF3DBB /* SharpStream */,
+				9A3840672F1F779100EF3DBB /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		9A9A3B262F1F75B2006D9BD3 /* Products */ = {
+		9A3840672F1F779100EF3DBB /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				9A9A3B252F1F75B2006D9BD3 /* Sharp Stream.app */,
+				9A3840662F1F779100EF3DBB /* SharpStream.app */,
 			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		9A3D91562F1F7B7A0038B961 /* Products */ = {
+			isa = PBXGroup;
 			name = Products;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		9A9A3B242F1F75B2006D9BD3 /* Sharp Stream */ = {
+		9A3840652F1F779100EF3DBB /* SharpStream */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 9A9A3B352F1F75B3006D9BD3 /* Build configuration list for PBXNativeTarget "Sharp Stream" */;
+			buildConfigurationList = 9A3840762F1F779200EF3DBB /* Build configuration list for PBXNativeTarget "SharpStream" */;
 			buildPhases = (
-				9A9A3B212F1F75B2006D9BD3 /* Sources */,
-				9A9A3B222F1F75B2006D9BD3 /* Frameworks */,
-				9A9A3B232F1F75B2006D9BD3 /* Resources */,
+				9A3840622F1F779100EF3DBB /* Sources */,
+				9A3840632F1F779100EF3DBB /* Frameworks */,
+				9A3840642F1F779100EF3DBB /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				9A9A3B272F1F75B2006D9BD3 /* Sharp Stream */,
+				9A3840682F1F779100EF3DBB /* SharpStream */,
 			);
-			name = "Sharp Stream";
+			name = SharpStream;
 			packageProductDependencies = (
 			);
-			productName = "Sharp Stream";
-			productReference = 9A9A3B252F1F75B2006D9BD3 /* Sharp Stream.app */;
+			productName = SharpStream;
+			productReference = 9A3840662F1F779100EF3DBB /* SharpStream.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		9A9A3B1D2F1F75B2006D9BD3 /* Project object */ = {
+		9A38405E2F1F779100EF3DBB /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
-					9A9A3B242F1F75B2006D9BD3 = {
+					9A3840652F1F779100EF3DBB = {
 						CreatedOnToolsVersion = 26.2;
 					};
 				};
 			};
-			buildConfigurationList = 9A9A3B202F1F75B2006D9BD3 /* Build configuration list for PBXProject "Sharp Stream" */;
+			buildConfigurationList = 9A3840612F1F779100EF3DBB /* Build configuration list for PBXProject "SharpStream" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
 				Base,
 			);
-			mainGroup = 9A9A3B1C2F1F75B2006D9BD3;
+			mainGroup = 9A38405D2F1F779100EF3DBB;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				9A2C15CB2F1F7D3000B642D5 /* XCRemoteSwiftPackageReference "opencv-spm" */,
+			);
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 9A9A3B262F1F75B2006D9BD3 /* Products */;
+			productRefGroup = 9A3840672F1F779100EF3DBB /* Products */;
 			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = 9A3D91562F1F7B7A0038B961 /* Products */;
+					ProjectRef = 9A3D91542F1F7B7A0038B961 /* SharpStream.xcodeproj */;
+				},
+			);
 			projectRoot = "";
 			targets = (
-				9A9A3B242F1F75B2006D9BD3 /* Sharp Stream */,
+				9A3840652F1F779100EF3DBB /* SharpStream */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		9A9A3B232F1F75B2006D9BD3 /* Resources */ = {
+		9A3840642F1F779100EF3DBB /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -115,7 +130,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		9A9A3B212F1F75B2006D9BD3 /* Sources */ = {
+		9A3840622F1F779100EF3DBB /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -125,7 +140,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		9A9A3B332F1F75B3006D9BD3 /* Debug */ = {
+		9A3840742F1F779200EF3DBB /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -189,7 +204,7 @@
 			};
 			name = Debug;
 		};
-		9A9A3B342F1F75B3006D9BD3 /* Release */ = {
+		9A3840752F1F779200EF3DBB /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -245,7 +260,7 @@
 			};
 			name = Release;
 		};
-		9A9A3B362F1F75B3006D9BD3 /* Debug */ = {
+		9A3840772F1F779200EF3DBB /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -259,13 +274,14 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.sharpstream.Sharp-Stream";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sharpstream.SharpStream";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -277,7 +293,7 @@
 			};
 			name = Debug;
 		};
-		9A9A3B372F1F75B3006D9BD3 /* Release */ = {
+		9A3840782F1F779200EF3DBB /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -291,13 +307,14 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.sharpstream.Sharp-Stream";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sharpstream.SharpStream";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -312,25 +329,36 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		9A9A3B202F1F75B2006D9BD3 /* Build configuration list for PBXProject "Sharp Stream" */ = {
+		9A3840612F1F779100EF3DBB /* Build configuration list for PBXProject "SharpStream" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				9A9A3B332F1F75B3006D9BD3 /* Debug */,
-				9A9A3B342F1F75B3006D9BD3 /* Release */,
+				9A3840742F1F779200EF3DBB /* Debug */,
+				9A3840752F1F779200EF3DBB /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		9A9A3B352F1F75B3006D9BD3 /* Build configuration list for PBXNativeTarget "Sharp Stream" */ = {
+		9A3840762F1F779200EF3DBB /* Build configuration list for PBXNativeTarget "SharpStream" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				9A9A3B362F1F75B3006D9BD3 /* Debug */,
-				9A9A3B372F1F75B3006D9BD3 /* Release */,
+				9A3840772F1F779200EF3DBB /* Debug */,
+				9A3840782F1F779200EF3DBB /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		9A2C15CB2F1F7D3000B642D5 /* XCRemoteSwiftPackageReference "opencv-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/yeatse/opencv-spm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 4.13.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 	};
-	rootObject = 9A9A3B1D2F1F75B2006D9BD3 /* Project object */;
+	rootObject = 9A38405E2F1F779100EF3DBB /* Project object */;
 }

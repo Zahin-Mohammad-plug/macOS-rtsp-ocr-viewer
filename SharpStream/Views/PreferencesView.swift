@@ -26,7 +26,10 @@ struct PreferencesView: View {
             // General Settings
             Form {
                 Section("Buffer Settings") {
-                    Picker("RAM Buffer Size", selection: $ramBufferSize) {
+                    Picker("RAM Buffer Size", selection: Binding(
+                        get: { BufferSizePreset(rawValue: ramBufferSizeRaw) ?? .medium },
+                        set: { ramBufferSizeRaw = $0.rawValue }
+                    )) {
                         Text("Low (1s, ~70 MB)").tag(BufferSizePreset.low)
                         Text("Medium (3s, ~200 MB)").tag(BufferSizePreset.medium)
                         Text("High (5s, ~350 MB)").tag(BufferSizePreset.high)
@@ -62,9 +65,15 @@ struct PreferencesView: View {
             // OCR Settings
             Form {
                 Section("OCR Settings") {
-                    Toggle("Enable OCR", isOn: $appState.ocrEngine.isEnabled)
+                    Toggle("Enable OCR", isOn: Binding(
+                        get: { appState.ocrEngine.isEnabled },
+                        set: { appState.ocrEngine.isEnabled = $0 }
+                    ))
                     
-                    Picker("Recognition Level", selection: $appState.ocrEngine.recognitionLevel) {
+                    Picker("Recognition Level", selection: Binding(
+                        get: { appState.ocrEngine.recognitionLevel },
+                        set: { appState.ocrEngine.recognitionLevel = $0 }
+                    )) {
                         Text("Fast").tag(OCRRecognitionLevel.fast)
                         Text("Accurate").tag(OCRRecognitionLevel.accurate)
                     }

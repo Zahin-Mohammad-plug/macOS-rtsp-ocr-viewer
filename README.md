@@ -68,7 +68,7 @@ open SharpStream.xcodeproj
 
 ### Swift Package Manager
 - **MPVKit**: Multi-protocol stream playback (RTSP, SRT, UDP, TS, HLS, MP4, MKV)
-- **OpenCV**: Focus scoring algorithms (optional, falls back to Swift-native)
+- **OpenCV-SPM**: Focus scoring algorithms via [opencv-spm](https://github.com/yeatse/opencv-spm) (optional, falls back to Swift-native)
 
 ### System Frameworks
 - AVFoundation

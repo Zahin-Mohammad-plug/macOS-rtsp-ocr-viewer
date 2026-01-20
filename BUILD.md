@@ -23,7 +23,7 @@ open SharpStream.xcodeproj
 3. Add SPM Dependencies:
    - In Xcode, go to File > Add Package Dependencies
    - Add MPVKit (when available via SPM)
-   - Add OpenCV Swift package (when available via SPM)
+   - Add OpenCV-SPM: `https://github.com/yeatse/opencv-spm`
 
 ## Building
 

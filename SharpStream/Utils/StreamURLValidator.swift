@@ -102,7 +102,7 @@ enum ValidationResult {
     }
 }
 
-enum ConnectionTestResult {
+enum ConnectionTestResult: Equatable {
     case success
     case timeout
     case authenticationRequired

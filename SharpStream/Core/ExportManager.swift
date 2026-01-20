@@ -29,10 +29,15 @@ class ExportManager {
             try data.write(to: url)
             
         case .jpeg(let quality):
-            guard let data = ciContext.jpegRepresentation(of: ciImage, colorSpace: CGColorSpaceCreateDeviceRGB(), options: [.compressionQuality: quality]) else {
+            // Convert to CGImage first, then use NSBitmapImageRep for JPEG export
+            guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
                 throw ExportError.conversionFailed
             }
-            try data.write(to: url)
+            let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+            guard let jpegData = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: quality]) else {
+                throw ExportError.conversionFailed
+            }
+            try jpegData.write(to: url)
         }
     }
     
@@ -73,10 +78,15 @@ class ExportManager {
             try data.write(to: url)
             
         case .jpeg(let quality):
-            guard let data = ciContext.jpegRepresentation(of: compositeImage, colorSpace: CGColorSpaceCreateDeviceRGB(), options: [.compressionQuality: quality]) else {
+            // Convert to CGImage first, then use NSBitmapImageRep for JPEG export
+            guard let cgImage = ciContext.createCGImage(compositeImage, from: compositeImage.extent) else {
                 throw ExportError.conversionFailed
             }
-            try data.write(to: url)
+            let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+            guard let jpegData = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: quality]) else {
+                throw ExportError.conversionFailed
+            }
+            try jpegData.write(to: url)
         }
     }
     
@@ -97,9 +107,9 @@ class ExportManager {
             try saveFrame(frame, to: url, format: format)
             
             // Export OCR text if available
-            if let ocrResult = ocrResults[safe: index], !ocrResult.text.isEmpty {
+            if let ocrResult = ocrResults[safe: index], let result = ocrResult, !result.text.isEmpty {
                 let textURL = directory.appendingPathComponent("\(filename).txt")
-                try exportOCRText(ocrResult.text, to: textURL)
+                try exportOCRText(result.text, to: textURL)
             }
         }
     }

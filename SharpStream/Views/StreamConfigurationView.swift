@@ -43,7 +43,7 @@ struct StreamConfigurationView: View {
                 
                 if let result = connectionTestResult {
                     Text(result.errorMessage)
-                        .foregroundColor(result == .success ? .green : .red)
+                        .foregroundColor(result == ConnectionTestResult.success ? .green : .red)
                         .font(.caption)
                 }
             }

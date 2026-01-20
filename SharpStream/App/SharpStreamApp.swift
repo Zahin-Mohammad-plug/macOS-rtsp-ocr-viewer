@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 @main
 struct SharpStreamApp: App {
@@ -78,10 +79,15 @@ class AppState: ObservableObject {
     }
 }
 
-enum ConnectionState {
+enum ConnectionState: Equatable {
     case disconnected
     case connecting
     case connected
     case reconnecting
     case error(String)
+    
+    // Helper for comparison
+    func isEqual(to other: ConnectionState) -> Bool {
+        return self == other
+    }
 }

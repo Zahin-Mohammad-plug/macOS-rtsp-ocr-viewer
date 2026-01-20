@@ -8,6 +8,7 @@
 import Foundation
 import AppKit
 import Darwin
+import Combine
 
 class PerformanceMonitor: ObservableObject {
     @Published var cpuUsage: Double = 0.0

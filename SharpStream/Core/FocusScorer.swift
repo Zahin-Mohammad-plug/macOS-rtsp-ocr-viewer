@@ -19,21 +19,22 @@ class FocusScorer {
     init() {
         swiftScorer = SwiftFocusScorer()
         
-        // Try to initialize OpenCV
-        do {
-            openCVScorer = try OpenCVFocusScorer()
-            useOpenCV = true
-        } catch {
-            print("OpenCV not available, using Swift-native implementation")
-            useOpenCV = false
-        }
+        // Try to initialize OpenCV (from opencv-spm package)
+        openCVScorer = OpenCVFocusScorer()
+        useOpenCV = true // Will fall back to Swift-native if OpenCV not available
     }
     
     func scoreFrame(_ pixelBuffer: CVPixelBuffer, timestamp: Date, sequenceNumber: Int) -> FrameScore {
         let score: Double
         
         if useOpenCV, let openCVScorer = openCVScorer {
-            score = openCVScorer.calculateScore(pixelBuffer)
+            let openCVScore = openCVScorer.calculateScore(pixelBuffer)
+            // If OpenCV returns 0, it might mean it's not available, fall back to Swift
+            if openCVScore > 0 {
+                score = openCVScore
+            } else {
+                score = swiftScorer.calculateScore(pixelBuffer)
+            }
         } else {
             score = swiftScorer.calculateScore(pixelBuffer)
         }

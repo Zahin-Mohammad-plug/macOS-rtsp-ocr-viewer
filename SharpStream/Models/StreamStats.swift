@@ -16,11 +16,12 @@ struct StreamStats: Equatable {
     var bufferDuration: TimeInterval // total buffer length in seconds
     var ramBufferUsage: Int // MB
     var diskBufferUsage: Int // MB
-    var currentFocusScore: Double?
+    var currentFocusScore: Double? // percentage
     var cpuUsage: Double? // percentage
     var gpuUsage: Double? // percentage
     var focusScoringFPS: Double? // frames scored per second
     var memoryPressure: MemoryPressureLevel
+    
     
     init(connectionStatus: ConnectionState = .disconnected,
          bitrate: Int? = nil,

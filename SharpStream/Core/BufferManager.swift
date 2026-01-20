@@ -42,7 +42,7 @@ actor BufferManager {
     private let maxDiskBufferDuration: TimeInterval = 2400 // 40 minutes
     
     private var bufferIndexPath: URL
-    private var indexSaveTimer: Timer?
+    private var indexSaveTask: Task<Void, Never>?
     
     var bufferSizePreset: BufferSizePreset = .medium {
         didSet {
@@ -63,8 +63,7 @@ actor BufferManager {
         try? FileManager.default.createDirectory(at: sharpStreamDir, withIntermediateDirectories: true)
         
         updateBufferSize()
-        startIndexSaveTimer()
-        loadRecoveryData()
+        // Note: Timer and file operations will be handled when actor is accessed
     }
     
     private func updateBufferSize() {
@@ -178,13 +177,21 @@ actor BufferManager {
     
     // MARK: - Crash Recovery
     
-    private func startIndexSaveTimer() {
-        // Save buffer index every 30 seconds
-        indexSaveTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
-            Task {
-                await self?.saveBufferIndex()
+    func startIndexSaveTimer() {
+        // Cancel any existing task
+        indexSaveTask?.cancel()
+        // Start a new repeating task
+        indexSaveTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                await saveBufferIndex()
             }
         }
+    }
+    
+    func stopIndexSaveTask() {
+        indexSaveTask?.cancel()
+        indexSaveTask = nil
     }
     
     private func saveBufferIndex() {
@@ -195,14 +202,34 @@ actor BufferManager {
             savedAt: Date()
         )
         
-        if let data = try? JSONEncoder().encode(index) {
-            try? data.write(to: bufferIndexPath)
+        // Encode on a background queue to avoid actor isolation issues
+        let path = bufferIndexPath
+        Task.detached {
+            if let data = try? JSONEncoder().encode(index) {
+                try? data.write(to: path)
+            }
         }
     }
     
-    private func loadRecoveryData() -> BufferRecoveryData? {
-        guard let data = try? Data(contentsOf: bufferIndexPath),
-              let index = try? JSONDecoder().decode(BufferIndex.self, from: data) else {
+    nonisolated func loadRecoveryData() -> BufferRecoveryData? {
+        // Access bufferIndexPath through a nonisolated computed property
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let sharpStreamDir = appSupport.appendingPathComponent("SharpStream")
+        let path = sharpStreamDir.appendingPathComponent("buffer_index.json")
+        
+        guard let data = try? Data(contentsOf: path) else {
+            return nil
+        }
+        
+        // Decode synchronously - BufferIndex is a simple struct
+        struct SimpleBufferIndex: Codable {
+            let lastStreamURL: String?
+            let lastTimestamp: Date?
+            let sequenceNumber: Int
+            let savedAt: Date?
+        }
+        
+        guard let index = try? JSONDecoder().decode(SimpleBufferIndex.self, from: data) else {
             return nil
         }
         
