@@ -76,9 +76,28 @@ struct StreamURLValidator {
     }
     
     static func testConnection(to urlString: String, timeout: TimeInterval = 5.0) async -> ConnectionTestResult {
-        // This would perform an actual connection test
-        // For now, return a placeholder
-        return .success
+        // Create a temporary MPVKit player to test connection
+        let testPlayer = MPVPlayerWrapper()
+        defer {
+            testPlayer.cleanup()
+        }
+        
+        // Try to load the stream
+        testPlayer.loadStream(url: urlString)
+        
+        // Wait a bit for connection to establish
+        try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+        
+        // Check if player has metadata (indicates successful connection)
+        let metadata = testPlayer.getMetadata()
+        
+        if metadata.resolution != nil || metadata.frameRate != nil {
+            return .success
+        } else {
+            // Check if timeout exceeded (this is a simplified check)
+            // In production, you'd want to check connection state more carefully
+            return .unknownError("Unable to connect to stream")
+        }
     }
 }
 

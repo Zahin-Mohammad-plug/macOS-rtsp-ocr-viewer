@@ -7,6 +7,8 @@
 
 import Foundation
 import CoreVideo
+import CoreImage
+import AppKit
 import Combine
 
 enum BufferSizePreset: String, CaseIterable {
@@ -39,7 +41,11 @@ actor BufferManager {
     
     private let diskBufferPath: URL
     private var diskBufferSegments: [BufferSegment] = []
-    private let maxDiskBufferDuration: TimeInterval = 2400 // 40 minutes
+    private var maxDiskBufferDuration: TimeInterval = 2400 // 40 minutes
+    
+    func setMaxBufferDuration(_ duration: TimeInterval) {
+        maxDiskBufferDuration = duration
+    }
     
     private var bufferIndexPath: URL
     private var indexSaveTask: Task<Void, Never>?
@@ -102,13 +108,18 @@ actor BufferManager {
             ramBuffer.removeFirst(ramBuffer.count - ramBufferMaxSize)
         }
         
-        // Periodically write to disk buffer
-        if currentSequenceNumber % 1800 == 0 { // Every 60 seconds at 30fps
+        // Periodically write to disk buffer (every frame for now, can be optimized)
+        // Write every 30 frames (~1 second at 30fps) to reduce disk I/O
+        if currentSequenceNumber % 30 == 0 {
             writeToDiskBuffer(frameData)
         }
         
         // Cleanup old disk buffers
         cleanupOldDiskBuffers()
+    }
+    
+    func getCurrentSequenceNumber() -> Int {
+        return currentSequenceNumber
     }
     
     func getFrame(at timestamp: Date, tolerance: TimeInterval = 0.1) -> CVPixelBuffer? {
@@ -156,21 +167,176 @@ actor BufferManager {
     }
     
     private func compressFrame(_ pixelBuffer: CVPixelBuffer) -> Data? {
-        // Convert CVPixelBuffer to JPEG
-        // This is a simplified version - in production, use proper image conversion
-        // For now, return nil to save memory (we'll decompress from pixelBuffer when needed)
-        return nil
+        // Convert CVPixelBuffer to JPEG for efficient storage
+        // Lock pixel buffer
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        
+        // Create CGImage from pixel buffer
+        var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext()
+        
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            return nil
+        }
+        
+        // Convert to NSImage for JPEG export
+        let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        guard let tiffData = nsImage.tiffRepresentation,
+              let bitmapImage = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        
+        // Compress to JPEG with quality 0.8
+        guard let jpegData = bitmapImage.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return nil
+        }
+        
+        return jpegData
     }
     
     private func writeToDiskBuffer(_ frameData: FrameData) {
-        // Write frame to disk segment
-        // Implementation would serialize frameData and write to disk
+        // Write frame to disk segment (organized by minute)
+        let calendar = Calendar.current
+        let minuteStart = calendar.dateInterval(of: .minute, for: frameData.timestamp)?.start ?? frameData.timestamp
+        
+        // Create segment directory if needed
+        let segmentName = String(format: "segment_%d", Int(minuteStart.timeIntervalSince1970))
+        let segmentDir = diskBufferPath.appendingPathComponent(segmentName, isDirectory: true)
+        try? FileManager.default.createDirectory(at: segmentDir, withIntermediateDirectories: true)
+        
+        // Serialize frame data
+        let frameFileName = String(format: "frame_%d_%d.jpg", frameData.sequenceNumber, Int(frameData.timestamp.timeIntervalSince1970))
+        let frameFileURL = segmentDir.appendingPathComponent(frameFileName)
+        
+        // Write JPEG data (or pixel buffer if JPEG unavailable)
+        if let jpegData = frameData.jpegData {
+            try? jpegData.write(to: frameFileURL)
+        } else {
+            // Compress on-the-fly if JPEG data not available
+            // Note: pixelBuffer is not optional, so we can access it directly
+            if let jpegData = compressFrame(frameData.pixelBuffer) {
+                try? jpegData.write(to: frameFileURL)
+            }
+        }
+        
+        // Write metadata (JSON)
+        let metadataFileName = String(format: "frame_%d_%d.json", frameData.sequenceNumber, Int(frameData.timestamp.timeIntervalSince1970))
+        let metadataFileURL = segmentDir.appendingPathComponent(metadataFileName)
+        
+        let metadata: [String: Any] = [
+            "sequenceNumber": frameData.sequenceNumber,
+            "timestamp": frameData.timestamp.timeIntervalSince1970,
+            "filename": frameFileName
+        ]
+        
+        if let jsonData = try? JSONSerialization.data(withJSONObject: metadata, options: .prettyPrinted) {
+            try? jsonData.write(to: metadataFileURL)
+        }
+        
+        // Update segments list
+        let segment = BufferSegment(
+            startTime: minuteStart,
+            endTime: calendar.date(byAdding: .minute, value: 1, to: minuteStart) ?? minuteStart,
+            filePath: segmentDir
+        )
+        
+        // Add or update segment in list
+        if let existingIndex = diskBufferSegments.firstIndex(where: { $0.startTime == segment.startTime }) {
+            diskBufferSegments[existingIndex] = segment
+        } else {
+            diskBufferSegments.append(segment)
+            diskBufferSegments.sort { $0.startTime < $1.startTime }
+        }
     }
     
     private func loadFromDiskBuffer(timestamp: Date, tolerance: TimeInterval) -> CVPixelBuffer? {
-        // Load frame from disk buffer
-        // Implementation would search disk segments and load frame
-        return nil
+        // Find segment containing this timestamp
+        guard let segment = diskBufferSegments.first(where: { segment in
+            timestamp >= segment.startTime && timestamp < segment.endTime
+        }) else {
+            return nil
+        }
+        
+        // Find frame closest to timestamp
+        var closestFrame: (url: URL, timestamp: Date)?
+        var minTimeDifference = tolerance + 1.0
+        
+        guard let files = try? FileManager.default.contentsOfDirectory(at: segment.filePath, includingPropertiesForKeys: [.contentModificationDateKey]) else {
+            return nil
+        }
+        
+        for fileURL in files where fileURL.pathExtension == "jpg" {
+            // Extract timestamp from filename (format: frame_N_timestamp.jpg)
+            let filename = fileURL.deletingPathExtension().lastPathComponent
+            let components = filename.components(separatedBy: "_")
+            if components.count >= 3,
+               let timestampValue = Double(components[2]),
+               let fileDate = components.indices.contains(2) ? Date(timeIntervalSince1970: timestampValue) : nil {
+                
+                let timeDiff = abs(fileDate.timeIntervalSince(timestamp))
+                if timeDiff < minTimeDifference {
+                    minTimeDifference = timeDiff
+                    closestFrame = (fileURL, fileDate)
+                }
+            }
+        }
+        
+        guard let frame = closestFrame else {
+            return nil
+        }
+        
+        // Load JPEG and convert to CVPixelBuffer
+        guard let jpegData = try? Data(contentsOf: frame.url),
+              let nsImage = NSImage(data: jpegData) else {
+            return nil
+        }
+        
+        // Get CGImage from NSImage
+        var rect = NSRect(origin: .zero, size: nsImage.size)
+        guard let cgImage = nsImage.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+            return nil
+        }
+        
+        // Convert CGImage to CVPixelBuffer
+        return cgImageToPixelBuffer(cgImage)
+    }
+    
+    private func cgImageToPixelBuffer(_ cgImage: CGImage) -> CVPixelBuffer? {
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue!,
+             kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!] as CFDictionary,
+            &pixelBuffer
+        )
+        
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
+            return nil
+        }
+        
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        
+        let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer),
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        )
+        
+        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        return buffer
     }
     
     private func cleanupOldDiskBuffers() {
@@ -190,14 +356,15 @@ actor BufferManager {
     
     // MARK: - Crash Recovery
     
-    func startIndexSaveTimer() {
+    func startIndexSaveTimer(streamURL: String? = nil) {
         // Cancel any existing task
         indexSaveTask?.cancel()
         // Start a new repeating task
+        let url = streamURL // Capture URL for closure
         indexSaveTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
-                saveBufferIndex()
+                saveBufferIndex(streamURL: url)
             }
         }
     }
@@ -207,11 +374,12 @@ actor BufferManager {
         indexSaveTask = nil
     }
     
-    private func saveBufferIndex() {
+    private     func saveBufferIndex(streamURL: String? = nil) {
         // Capture values to avoid actor isolation issues
         let lastTimestamp = ramBuffer.last?.timestamp
         let sequenceNumber = currentSequenceNumber
         let path = bufferIndexPath
+        let url = streamURL // Use provided URL or keep nil
         
         // Encode on a background queue to avoid actor isolation issues
         Task.detached {
@@ -224,7 +392,7 @@ actor BufferManager {
             }
             
             let index = SimpleBufferIndex(
-                lastStreamURL: nil, // Will be set by StreamManager
+                lastStreamURL: url,
                 lastTimestamp: lastTimestamp,
                 sequenceNumber: sequenceNumber,
                 savedAt: Date()

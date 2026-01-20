@@ -34,11 +34,24 @@ struct PreferencesView: View {
                         Text("Medium (3s, ~200 MB)").tag(BufferSizePreset.medium)
                         Text("High (5s, ~350 MB)").tag(BufferSizePreset.high)
                     }
+                    .onChange(of: ramBufferSizeRaw) { _, newValue in
+                        if let preset = BufferSizePreset(rawValue: newValue) {
+                            Task {
+                                await appState.bufferManager.setBufferSizePreset(preset)
+                            }
+                        }
+                    }
                     
                     Picker("Maximum Buffer Length", selection: $maxBufferLength) {
                         Text("20 minutes").tag(20)
                         Text("30 minutes").tag(30)
                         Text("40 minutes").tag(40)
+                    }
+                    .onChange(of: maxBufferLength) { _, newValue in
+                        // Update buffer manager max duration
+                        Task {
+                            await appState.bufferManager.setMaxBufferDuration(TimeInterval(newValue * 60))
+                        }
                     }
                 }
                 
@@ -56,6 +69,10 @@ struct PreferencesView: View {
                         .font(.caption)
                     
                     Toggle("Auto-OCR on Smart Pause", isOn: $autoOCROnSmartPause)
+                        .onChange(of: autoOCROnSmartPause) { _, newValue in
+                            // This preference is used in ControlsView.performSmartPause()
+                            // No direct action needed here, just stored for use
+                        }
                 }
             }
             .tabItem {
@@ -80,6 +97,10 @@ struct PreferencesView: View {
                     
                     TextField("Language", text: $ocrLanguage)
                         .help("Language code (e.g., en-US, fr-FR)")
+                        .onChange(of: ocrLanguage) { _, newValue in
+                            // Update OCR engine languages
+                            appState.ocrEngine.languages = [newValue]
+                        }
                 }
             }
             .tabItem {
@@ -89,10 +110,18 @@ struct PreferencesView: View {
             // Focus Scoring
             Form {
                 Section("Focus Algorithm") {
-                    Picker("Algorithm", selection: $focusAlgorithm) {
-                        Text("Laplacian").tag("Laplacian")
-                        Text("Tenengrad").tag("Tenengrad")
-                        Text("Sobel").tag("Sobel")
+                    Picker("Algorithm", selection: Binding(
+                        get: { FocusAlgorithm(rawValue: focusAlgorithm) ?? .laplacian },
+                        set: { focusAlgorithm = $0.rawValue }
+                    )) {
+                        ForEach(FocusAlgorithm.allCases, id: \.self) { algo in
+                            Text(algo.displayName).tag(algo)
+                        }
+                    }
+                    .onChange(of: focusAlgorithm) { _, newValue in
+                        if let algo = FocusAlgorithm(rawValue: newValue) {
+                            appState.focusScorer.setAlgorithm(algo)
+                        }
                     }
                 }
             }
@@ -113,9 +142,10 @@ struct PreferencesView: View {
             }
         }
         .frame(width: 500, height: 400)
-        .onChange(of: ramBufferSize) { _, newValue in
-            Task {
-                await appState.bufferManager.setBufferSizePreset(newValue)
+        .onAppear {
+            // Initialize preferences from app state
+            if let algo = FocusAlgorithm(rawValue: focusAlgorithm) {
+                appState.focusScorer.setAlgorithm(algo)
             }
         }
     }

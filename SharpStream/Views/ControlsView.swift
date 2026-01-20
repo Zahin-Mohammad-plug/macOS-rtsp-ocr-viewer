@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 struct ControlsView: View {
     @EnvironmentObject var appState: AppState
@@ -14,6 +15,10 @@ struct ControlsView: View {
     @State private var duration: TimeInterval = 0
     @State private var playbackSpeed: Double = 1.0
     @State private var volume: Double = 1.0
+    
+    private var player: MPVPlayerWrapper? {
+        appState.streamManager.player
+    }
     
     var body: some View {
         VStack(spacing: 12) {
@@ -96,44 +101,82 @@ struct ControlsView: View {
                         Text("Volume")
                     }
                     .frame(width: 100)
+                    .onChange(of: volume) { _, newValue in
+                        setVolume(newValue)
+                    }
                 }
             }
         }
     }
     
     private func togglePlayPause() {
+        player?.togglePlayPause()
         isPlaying.toggle()
-        // TODO: Control MPVKit player
     }
     
     private func seek(to time: TimeInterval) {
+        player?.seek(to: time)
         currentTime = time
-        // TODO: Seek MPVKit player
     }
     
     private func seek(offset: TimeInterval) {
-        currentTime = max(0, min(duration, currentTime + offset))
-        seek(to: currentTime)
+        let newTime = max(0, min(duration, currentTime + offset))
+        seek(to: newTime)
     }
     
     private func stepFrame(backward: Bool) {
-        // TODO: Step frame by frame
+        player?.stepFrame(backward: backward)
+        // Update current time after frame step
+        if let player = player {
+            // Get updated time from player
+            // For now, estimate based on frame rate
+            let frameDuration = 1.0 / (appState.streamManager.streamStats.frameRate ?? 30.0)
+            if backward {
+                currentTime = max(0, currentTime - frameDuration)
+            } else {
+                currentTime = min(duration, currentTime + frameDuration)
+            }
+        }
+    }
+    
+    private func updatePlayerState() {
+        // Observe player state changes via Combine
+        // The player's @Published properties will automatically update this view
+        if let player = player {
+            // Use Combine to observe player state
+            // For now, update directly from player properties
+            currentTime = player.currentTime
+            isPlaying = player.isPlaying
+            duration = player.duration
+            playbackSpeed = player.playbackSpeed
+            volume = player.volume
+        }
     }
     
     private func performSmartPause() {
         Task {
+            // Pause playback
+            player?.pause()
+            
             // Get lookback window from preferences (default 3 seconds)
             let lookbackWindow: TimeInterval = 3.0
             
             // Find best frame
             if let bestFrame = appState.focusScorer.findBestFrame(in: lookbackWindow) {
+                // Seek to best frame
+                if let player = player {
+                    let currentTime = player.currentTime
+                    let seekTime = bestFrame.timestamp.timeIntervalSince(Date()) + currentTime
+                    player.seek(to: max(0, seekTime))
+                }
+                
                 // Perform OCR if enabled
                 if appState.ocrEngine.isEnabled {
                     if let pixelBuffer = bestFrame.pixelBuffer {
                         appState.ocrEngine.recognizeText(in: pixelBuffer) { result in
-                            // Handle OCR result
-                            if let result = result {
-                                print("OCR Result: \(result.text)")
+                            // Update app state with OCR result
+                            DispatchQueue.main.async {
+                                appState.currentOCRResult = result
                             }
                         }
                     }
@@ -143,8 +186,13 @@ struct ControlsView: View {
     }
     
     private func setPlaybackSpeed(_ speed: Double) {
+        player?.setSpeed(speed)
         playbackSpeed = speed
-        // TODO: Set MPVKit playback speed
+    }
+    
+    private func setVolume(_ volume: Double) {
+        player?.setVolume(volume)
+        self.volume = volume
     }
     
     private func formatTime(_ time: TimeInterval) -> String {

@@ -7,11 +7,14 @@
 
 import Foundation
 import CoreVideo
+import Combine
 
-class FocusScorer {
+class FocusScorer: ObservableObject {
     private var openCVScorer: OpenCVFocusScorer?
     private var swiftScorer: SwiftFocusScorer
     private var useOpenCV: Bool = true
+    
+    @Published var algorithm: FocusAlgorithm = .laplacian
     
     private var scoreHistory: [FrameScore] = []
     private let maxHistorySize = 1000
@@ -76,5 +79,18 @@ class FocusScorer {
         
         let duration = last.timestamp.timeIntervalSince(first.timestamp)
         return duration > 0 ? Double(recent.count) / duration : 0
+    }
+    
+    func setAlgorithm(_ algorithm: FocusAlgorithm) {
+        self.algorithm = algorithm
+        // Algorithm selection affects which scorer is used
+        // Currently only Laplacian is implemented, but structure is ready for Tenengrad/Sobel
+        switch algorithm {
+        case .laplacian:
+            useOpenCV = true // Use OpenCV if available, otherwise Swift-native
+        case .tenengrad, .sobel:
+            // TODO: Implement Tenengrad and Sobel algorithms
+            useOpenCV = true
+        }
     }
 }

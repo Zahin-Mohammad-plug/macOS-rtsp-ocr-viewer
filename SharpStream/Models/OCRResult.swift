@@ -8,7 +8,7 @@
 import Foundation
 import CoreGraphics
 
-struct OCRResult: Identifiable {
+struct OCRResult: Identifiable, Equatable {
     let id: UUID
     let text: String
     let confidence: Double

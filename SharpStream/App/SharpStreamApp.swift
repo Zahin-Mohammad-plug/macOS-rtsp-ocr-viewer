@@ -7,10 +7,47 @@
 
 import SwiftUI
 import Combine
+import os.log
+
+#if canImport(Libmpv)
+import Libmpv
+#endif
 
 @main
 struct SharpStreamApp: App {
     @StateObject private var appState = AppState()
+    
+    private static let logger = Logger(subsystem: "com.sharpstream", category: "app")
+    
+    init() {
+        
+        // Force logging to console AND unified logging
+        print("🚀 ========================================")
+        Self.logger.info("🚀 SharpStream App Starting")
+        print("🚀 SharpStream App Starting")
+        print("🚀 ========================================")
+        
+        // Test Libmpv availability at compile time (this is the actual C API module)
+        #if canImport(Libmpv)
+        Self.logger.info("✅ Libmpv: canImport(Libmpv) = TRUE")
+        print("✅ Libmpv: canImport(Libmpv) = TRUE")
+        print("✅ Libmpv module is available - C API accessible")
+        #else
+        Self.logger.error("❌ Libmpv: canImport(Libmpv) = FALSE - MODULE NOT FOUND")
+        print("❌ Libmpv: canImport(Libmpv) = FALSE")
+        print("   The Libmpv module is not available at compile time")
+        print("   This means the Swift compiler cannot find the Libmpv module")
+        print("   SOLUTIONS:")
+        print("   1. In Xcode: File > Packages > Reset Package Caches")
+        print("   2. Then: File > Packages > Resolve Package Versions")
+        print("   3. Clean build: Product > Clean Build Folder (⇧⌘K)")
+        print("   4. Rebuild: Product > Build (⌘B)")
+        print("   5. Check that MPVKit package and Libmpv are properly linked")
+        #endif
+        
+        print("📝 App initialization complete")
+        Self.logger.info("📝 App initialization complete")
+    }
     
     var body: some Scene {
         WindowGroup {
@@ -19,6 +56,14 @@ struct SharpStreamApp: App {
         }
         .windowStyle(.automatic)
         .defaultSize(width: 1200, height: 800)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New Window") {
+                    // Allow multiple windows if needed
+                }
+                .keyboardShortcut("n")
+            }
+        }
         
         Settings {
             PreferencesView()
@@ -32,7 +77,8 @@ class AppState: ObservableObject {
     @Published var currentStream: SavedStream?
     @Published var isConnected: Bool = false
     @Published var connectionState: ConnectionState = .disconnected
-    
+    @Published var currentOCRResult: OCRResult?
+
     let streamManager = StreamManager()
     let bufferManager = BufferManager()
     let focusScorer = FocusScorer()
@@ -41,14 +87,34 @@ class AppState: ObservableObject {
     let streamDatabase = StreamDatabase()
     let performanceMonitor = PerformanceMonitor()
     let keyboardShortcuts = KeyboardShortcuts()
-    
+
+    private var cancellables = Set<AnyCancellable>()
+
     init() {
-        // Link stream manager to database
+        // Link stream manager to database and other managers
         streamManager.database = streamDatabase
-        
+        streamManager.bufferManager = bufferManager
+        streamManager.focusScorer = focusScorer
+
+        // Subscribe to StreamManager changes and forward to AppState
+        streamManager.$connectionState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newState in
+                self?.connectionState = newState
+                self?.isConnected = (newState == .connected)
+            }
+            .store(in: &cancellables)
+
+        streamManager.$currentStream
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newStream in
+                self?.currentStream = newStream
+            }
+            .store(in: &cancellables)
+
         // Start performance monitoring
         performanceMonitor.startMonitoring()
-        
+
         // Update stats periodically
         startStatsUpdateTimer()
     }

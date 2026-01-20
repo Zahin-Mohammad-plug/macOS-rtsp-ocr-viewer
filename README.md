@@ -2,6 +2,10 @@
 
 A native macOS application for viewing RTSP streams with smart frame selection, OCR text recognition, and VLC-style playback controls.
 
+> 🎬 **Quick Test**: Drag an MP4 file onto the video player window to test playback immediately!
+> 
+> 📚 **Documentation**: See [docs/](docs/) for detailed architecture, API reference, and development guides.
+
 ## Features
 
 ### Stream Management
@@ -38,6 +42,7 @@ A native macOS application for viewing RTSP streams with smart frame selection, 
 - **Clipboard**: Copy frames and text to clipboard
 - **Composite Export**: Export frame with OCR overlay
 
+
 ## Requirements
 
 - macOS 14.0 (Sonoma) or later
@@ -67,8 +72,11 @@ open SharpStream.xcodeproj
 ## Dependencies
 
 ### Swift Package Manager
-- **MPVKit**: Multi-protocol stream playback (RTSP, SRT, UDP, TS, HLS, MP4, MKV)
-- **OpenCV-SPM**: Focus scoring algorithms via [opencv-spm](https://github.com/yeatse/opencv-spm) (optional, falls back to Swift-native)
+- **MPVKit** (v0.41.0): Multi-protocol stream playback (RTSP, SRT, UDP, TS, HLS, MP4, MKV)
+  - Provides libmpv C API bindings for video playback
+  - Hardware-accelerated decoding support
+  - See [MPVKIT_INTEGRATION.md](MPVKIT_INTEGRATION.md) for detailed integration documentation
+- **OpenCV-SPM** (v4.13.0): Focus scoring algorithms via [opencv-spm](https://github.com/yeatse/opencv-spm) (optional, falls back to Swift-native)
 
 ### System Frameworks
 - AVFoundation
@@ -86,8 +94,12 @@ open SharpStream.xcodeproj
 4. Click "Save" to add to your library
 
 ### Quick Stream Entry
-- Use ⌘⇧N to paste a stream URL from clipboard
-- Or use the "Paste Stream URL" button in the toolbar
+- **Drag & Drop**: Drag a video file (MP4, MKV, MOV, AVI, TS, etc.) onto the video player area - works anytime!
+- **Paste URL**: Use ⌘⇧N to paste a stream URL from clipboard
+- **Toolbar**: Use the "Paste Stream URL" button in the toolbar
+- **File Menu**: File > Open... (⌘O) to browse for video files
+
+**Testing**: The easiest way to test is to drag an MP4 file onto the window!
 
 ### Smart Pause
 1. Click "Smart Pause" or press ⌘S
@@ -126,12 +138,15 @@ Access preferences via **SharpStream > Preferences** or **⌘,**
 
 ## Architecture
 
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed system architecture and design decisions.
+
 ```
 SharpStream/
 ├── App/              # App entry point
 ├── Views/            # SwiftUI views
 ├── Core/             # Business logic
 │   ├── StreamManager      # Stream connection & reconnect
+│   ├── MPVPlayerWrapper   # MPVKit/libmpv wrapper
 │   ├── BufferManager      # Hybrid RAM/disk buffer
 │   ├── FocusScorer        # Frame sharpness scoring
 │   ├── OCREngine          # Vision OCR wrapper
@@ -174,6 +189,18 @@ Contributions are welcome! Please open an issue or submit a pull request.
 ## License
 
 [Add your license here]
+
+## Documentation
+
+- **[docs/README.md](docs/README.md)** - Documentation index
+- **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)** - Complete user guide
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System architecture and design
+- **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - API documentation
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development guide
+- **[MPVKIT_INTEGRATION.md](MPVKIT_INTEGRATION.md)** - MPVKit integration guide
+- **[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md)** - Current implementation status
+- **[BUILD.md](BUILD.md)** - Build instructions
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history
 
 ## Acknowledgments
 
