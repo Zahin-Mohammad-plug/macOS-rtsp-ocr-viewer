@@ -62,14 +62,17 @@ actor BufferManager {
         try? FileManager.default.createDirectory(at: diskBufferPath, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: sharpStreamDir, withIntermediateDirectories: true)
         
-        updateBufferSize()
+        // Initialize buffer size based on default preset
+        let fps: Double = 30.0
+        ramBufferMaxSize = Int(BufferSizePreset.medium.duration * fps)
         // Note: Timer and file operations will be handled when actor is accessed
     }
     
     private func updateBufferSize() {
         // Calculate max frames based on preset (assuming 30fps)
         let fps: Double = 30.0
-        ramBufferMaxSize = Int(bufferSizePreset.duration * fps)
+        let preset = bufferSizePreset
+        ramBufferMaxSize = Int(preset.duration * fps)
     }
     
     func addFrame(_ pixelBuffer: CVPixelBuffer, timestamp: Date) {
@@ -102,7 +105,9 @@ actor BufferManager {
     func getFrame(at timestamp: Date, tolerance: TimeInterval = 0.1) -> CVPixelBuffer? {
         // First check RAM buffer
         if let frame = ramBuffer.first(where: { abs($0.timestamp.timeIntervalSince(timestamp)) < tolerance }) {
-            return frame.pixelBuffer
+            // Return a copy of the pixel buffer to avoid actor isolation issues
+            let pixelBuffer = frame.pixelBuffer
+            return pixelBuffer
         }
         
         // Then check disk buffer
@@ -184,7 +189,7 @@ actor BufferManager {
         indexSaveTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
-                await saveBufferIndex()
+                saveBufferIndex()
             }
         }
     }
@@ -195,16 +200,28 @@ actor BufferManager {
     }
     
     private func saveBufferIndex() {
-        let index = BufferIndex(
-            lastStreamURL: nil, // Will be set by StreamManager
-            lastTimestamp: ramBuffer.last?.timestamp,
-            sequenceNumber: currentSequenceNumber,
-            savedAt: Date()
-        )
+        // Capture values to avoid actor isolation issues
+        let lastTimestamp = ramBuffer.last?.timestamp
+        let sequenceNumber = currentSequenceNumber
+        let path = bufferIndexPath
         
         // Encode on a background queue to avoid actor isolation issues
-        let path = bufferIndexPath
         Task.detached {
+            // Create a simple struct for encoding (not actor-isolated)
+            struct SimpleBufferIndex: Codable {
+                let lastStreamURL: String?
+                let lastTimestamp: Date?
+                let sequenceNumber: Int
+                let savedAt: Date?
+            }
+            
+            let index = SimpleBufferIndex(
+                lastStreamURL: nil, // Will be set by StreamManager
+                lastTimestamp: lastTimestamp,
+                sequenceNumber: sequenceNumber,
+                savedAt: Date()
+            )
+            
             if let data = try? JSONEncoder().encode(index) {
                 try? data.write(to: path)
             }

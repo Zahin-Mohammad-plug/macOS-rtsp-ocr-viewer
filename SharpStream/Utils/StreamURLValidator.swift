@@ -20,7 +20,6 @@ struct StreamURLValidator {
         }
         
         // Check protocol
-        let scheme = url.scheme?.lowercased() ?? ""
         let protocolType = StreamProtocol.detect(from: urlString)
         
         if protocolType == .unknown {

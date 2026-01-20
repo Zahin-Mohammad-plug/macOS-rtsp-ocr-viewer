@@ -69,7 +69,7 @@ struct MainWindow: View {
         Task {
             if let recoveryData = await appState.bufferManager.getRecoveryData() {
                 // Show recovery dialog
-                DispatchQueue.main.async {
+                await MainActor.run {
                     // In production, show alert dialog
                     print("Recovery data found: \(recoveryData)")
                 }

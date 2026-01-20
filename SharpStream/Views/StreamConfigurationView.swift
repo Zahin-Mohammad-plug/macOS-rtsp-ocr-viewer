@@ -26,12 +26,12 @@ struct StreamConfigurationView: View {
             
             Form {
                 TextField("Stream Name", text: $name)
-                    .onChange(of: name) { _ in
+                    .onChange(of: name) { _, _ in
                         validate()
                     }
                 
                 TextField("Stream URL", text: $url)
-                    .onChange(of: url) { _ in
+                    .onChange(of: url) { _, _ in
                         validate()
                     }
                 

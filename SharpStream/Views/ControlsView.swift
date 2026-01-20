@@ -25,7 +25,7 @@ struct ControlsView: View {
             } maximumValueLabel: {
                 Text(formatTime(duration))
             }
-            .onChange(of: currentTime) { newValue in
+            .onChange(of: currentTime) { _, newValue in
                 seek(to: newValue)
             }
             
@@ -84,7 +84,7 @@ struct ControlsView: View {
                         Text("2x").tag(2.0)
                     }
                     .frame(width: 80)
-                    .onChange(of: playbackSpeed) { newValue in
+                    .onChange(of: playbackSpeed) { _, newValue in
                         setPlaybackSpeed(newValue)
                     }
                 }
