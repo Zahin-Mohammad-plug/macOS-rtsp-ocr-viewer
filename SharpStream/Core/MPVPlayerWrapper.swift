@@ -173,8 +173,18 @@ class MPVPlayerWrapper: ObservableObject {
             return
         }
 
+        // If already initialized and window ID is set, skip
+        if isInitialized && windowIDSet {
+            return
+        }
+        
+        // CRITICAL: wid must be set BEFORE mpv_initialize
+        // If MPV is already initialized, we cannot set wid - this will fail
+        // The view must be created before initialization completes
         if isInitialized {
-            print("⚠️ MPV already initialized - window ID cannot be changed")
+            print("❌ ERROR: Cannot set window ID after MPV initialization")
+            print("   Window ID must be set before mpv_initialize()")
+            print("   The view should be created before the stream is loaded")
             return
         }
 
@@ -205,8 +215,10 @@ class MPVPlayerWrapper: ObservableObject {
             windowView = layerOrView
             print("✅ Window ID set successfully for video rendering (\(typeName))")
 
-            // Now that window ID is set, complete the initialization
-            completeMPVInitialization()
+            // If not yet initialized, complete the initialization now
+            if !isInitialized {
+                completeMPVInitialization()
+            }
         }
         #endif
     }
@@ -570,7 +582,8 @@ class MPVPlayerWrapper: ObservableObject {
     // MARK: - Metadata Extraction
     
     private func startMetadataUpdateTimer() {
-        metadataUpdateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        // Update duration less frequently to avoid excessive logging
+        metadataUpdateTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.updateDuration()
         }
     }

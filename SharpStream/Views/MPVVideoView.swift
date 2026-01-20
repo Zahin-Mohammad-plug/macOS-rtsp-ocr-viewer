@@ -62,13 +62,9 @@ class MPVVideoNSView: NSView {
         metalLayer.framebufferOnly = false  // Allow compositing for video rendering
         metalLayer.backgroundColor = NSColor.black.cgColor
 
-        // Set initial drawable size to view bounds (critical for Metal rendering)
-        let scale = metalLayer.contentsScale
-        metalLayer.drawableSize = CGSize(
-            width: bounds.width * scale,
-            height: bounds.height * scale
-        )
-
+        // Set a minimum valid drawable size to avoid Metal validation errors
+        // Will be updated properly in layout() when view has valid bounds
+        metalLayer.drawableSize = CGSize(width: 1, height: 1)
         layer = metalLayer
     }
     
@@ -95,14 +91,17 @@ class MPVVideoNSView: NSView {
         super.layout()
 
         // Update Metal layer drawable size when view resizes
-        if let metalLayer = layer as? CAMetalLayer {
+        // Only update if view has valid non-zero bounds
+        if let metalLayer = layer as? CAMetalLayer, bounds.width > 0 && bounds.height > 0 {
             let scale = metalLayer.contentsScale
             let newDrawableSize = CGSize(
                 width: bounds.width * scale,
                 height: bounds.height * scale
             )
 
-            if metalLayer.drawableSize != newDrawableSize {
+            // Only update if size actually changed to avoid unnecessary updates
+            if abs(metalLayer.drawableSize.width - newDrawableSize.width) > 1.0 ||
+               abs(metalLayer.drawableSize.height - newDrawableSize.height) > 1.0 {
                 metalLayer.drawableSize = newDrawableSize
             }
         }
