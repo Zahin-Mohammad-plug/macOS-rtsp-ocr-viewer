@@ -270,6 +270,12 @@ actor BufferManager {
     func clearRecoveryData() {
         try? FileManager.default.removeItem(at: bufferIndexPath)
     }
+    
+    func getOCRResults() -> [OCRResult] {
+        // OCR results are managed by OCREngine, not BufferManager
+        // This is a placeholder - OCR results should be accessed from OCREngine
+        return []
+    }
 }
 
 struct FrameData {

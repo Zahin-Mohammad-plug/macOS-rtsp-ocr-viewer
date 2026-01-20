@@ -1,6 +1,15 @@
 {
-  "originHash" : "8e48cbf746f3364a238df97bffa6cc3383fcfeb545158731e0ec6ce8a819960e",
+  "originHash" : "b242cc8dda376feff0eae367063f60c5615cc55ec71342c5f99ae6d49ebd05ce",
   "pins" : [
+    {
+      "identity" : "mpvkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mpvkit/MPVKit.git",
+      "state" : {
+        "revision" : "613c0ccc3acf70e136aaff880a9b5fe8fdfaf5b8",
+        "version" : "0.41.0"
+      }
+    },
     {
       "identity" : "opencv-spm",
       "kind" : "remoteSourceControl",
