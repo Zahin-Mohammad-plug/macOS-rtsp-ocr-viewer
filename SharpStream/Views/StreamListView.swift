@@ -76,6 +76,14 @@ struct StreamListView: View {
             editingStream = nil
             showAddStreamSheet = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .recentStreamsUpdated)) { _ in
+            loadRecentStreams()
+        }
+        .onReceive(appState.streamManager.$connectionState) { state in
+            if state == .connected || state == .disconnected {
+                loadRecentStreams()
+            }
+        }
     }
     
     private func loadStreams() {

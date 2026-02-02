@@ -8,18 +8,25 @@
 import Foundation
 import SQLite3
 
+private let sqliteTransientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 class StreamDatabase {
     private var db: OpaquePointer?
     private let dbPath: String
     
-    init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let sharpStreamDir = appSupport.appendingPathComponent("SharpStream")
+    init(baseDirectory: URL? = nil) {
+        let rootDirectory: URL
+        if let baseDirectory {
+            rootDirectory = baseDirectory
+        } else {
+            rootDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        }
+        let sharpStreamDir = rootDirectory.appendingPathComponent("SharpStream", isDirectory: true)
         
         // Create directory if it doesn't exist
         try? FileManager.default.createDirectory(at: sharpStreamDir, withIntermediateDirectories: true)
         
-        dbPath = sharpStreamDir.appendingPathComponent("streams.db").path
+        dbPath = sharpStreamDir.appendingPathComponent("streams.db", isDirectory: false).path
         
         openDatabase()
         createTables()
@@ -80,6 +87,10 @@ class StreamDatabase {
         }
         sqlite3_finalize(statement)
     }
+
+    private func bindText(_ text: String, at index: Int32, to statement: OpaquePointer?) {
+        sqlite3_bind_text(statement, index, (text as NSString).utf8String, -1, sqliteTransientDestructor)
+    }
     
     // MARK: - Saved Streams
     
@@ -94,10 +105,10 @@ class StreamDatabase {
             throw DatabaseError.prepareFailed
         }
         
-        sqlite3_bind_text(statement, 1, stream.id.uuidString, -1, nil)
-        sqlite3_bind_text(statement, 2, (stream.name as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 3, (stream.url as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 4, stream.protocolType.rawValue, -1, nil)
+        bindText(stream.id.uuidString, at: 1, to: statement)
+        bindText(stream.name, at: 2, to: statement)
+        bindText(stream.url, at: 3, to: statement)
+        bindText(stream.protocolType.rawValue, at: 4, to: statement)
         sqlite3_bind_double(statement, 5, stream.createdAt.timeIntervalSince1970)
         if let lastUsed = stream.lastUsed {
             sqlite3_bind_double(statement, 6, lastUsed.timeIntervalSince1970)
@@ -135,7 +146,7 @@ class StreamDatabase {
         var stream: SavedStream?
         
         if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, id.uuidString, -1, nil)
+            bindText(id.uuidString, at: 1, to: statement)
             if sqlite3_step(statement) == SQLITE_ROW {
                 stream = parseStream(from: statement)
             }
@@ -153,7 +164,7 @@ class StreamDatabase {
             throw DatabaseError.prepareFailed
         }
         
-        sqlite3_bind_text(statement, 1, id.uuidString, -1, nil)
+        bindText(id.uuidString, at: 1, to: statement)
         
         if sqlite3_step(statement) != SQLITE_DONE {
             throw DatabaseError.executionFailed
@@ -171,7 +182,7 @@ class StreamDatabase {
         }
         
         sqlite3_bind_double(statement, 1, date.timeIntervalSince1970)
-        sqlite3_bind_text(statement, 2, streamID.uuidString, -1, nil)
+        bindText(streamID.uuidString, at: 2, to: statement)
         
         if sqlite3_step(statement) != SQLITE_DONE {
             throw DatabaseError.executionFailed
@@ -219,8 +230,8 @@ class StreamDatabase {
         var statement: OpaquePointer?
         if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
             let id = UUID().uuidString
-            sqlite3_bind_text(statement, 1, id, -1, nil)
-            sqlite3_bind_text(statement, 2, (url as NSString).utf8String, -1, nil)
+            bindText(id, at: 1, to: statement)
+            bindText(url, at: 2, to: statement)
             sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
             
             sqlite3_step(statement)

@@ -56,14 +56,24 @@ final class FocusScorerTests: XCTestCase {
         let pixelBuffer1 = createTestPixelBuffer(width: 640, height: 480)
         let pixelBuffer2 = createTestPixelBuffer(width: 640, height: 480)
         
-        let score1 = focusScorer.scoreFrame(pixelBuffer1, timestamp: Date().addingTimeInterval(-2), sequenceNumber: 1)
-        let score2 = focusScorer.scoreFrame(pixelBuffer2, timestamp: Date().addingTimeInterval(-1), sequenceNumber: 2)
+        _ = focusScorer.scoreFrame(pixelBuffer1, timestamp: Date().addingTimeInterval(-2), sequenceNumber: 1)
+        _ = focusScorer.scoreFrame(pixelBuffer2, timestamp: Date().addingTimeInterval(-1), sequenceNumber: 2)
         
         // Modify score2 to be higher
         // Note: In real test, you'd create frames with different sharpness
         
         let bestFrame = focusScorer.findBestFrame(in: 3.0)
         XCTAssertNotNil(bestFrame, "Should find best frame in time range")
+    }
+
+    func testFindBestFrameReturnsNilWhenWindowHasNoFrames() {
+        let now = Date()
+        let oldFrame = createTestPixelBuffer(width: 320, height: 240)
+        _ = focusScorer.scoreFrame(oldFrame, timestamp: now.addingTimeInterval(-20), sequenceNumber: 1)
+
+        let bestFrame = focusScorer.findBestFrame(in: 3.0, now: now)
+        XCTAssertNil(bestFrame, "Should return nil when no frames are in the requested lookback window")
+        XCTAssertEqual(focusScorer.recentFrameCount(in: 3.0, now: now), 0)
     }
     
     // Helper function to create test pixel buffer

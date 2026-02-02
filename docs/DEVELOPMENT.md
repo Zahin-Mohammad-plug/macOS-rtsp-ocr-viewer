@@ -105,6 +105,19 @@ This runs:
 - Build (`xcodebuild build`)
 - Tests (`xcodebuild test`) including UI smoke checks
 
+### Targeted Stability Bug Pass
+
+Run the focused RTSP/file hardening workflow with test artifacts:
+
+```bash
+scripts/targeted_bug_pass.sh
+```
+
+This writes logs and `.xcresult` bundles under:
+- `DerivedData/bug-pass/<timestamp>/build.log`
+- `DerivedData/bug-pass/<timestamp>/unit-tests.xcresult`
+- `DerivedData/bug-pass/<timestamp>/ui-smoke.xcresult`
+
 ### Manual Testing Checklist
 - [ ] Connect to RTSP stream
 - [ ] Test playback controls

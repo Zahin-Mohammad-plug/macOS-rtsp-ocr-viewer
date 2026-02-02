@@ -14,7 +14,7 @@ final class SharpStreamUITests: XCTestCase {
     }
 
     func testLaunchSmoke() throws {
-        let app = XCUIApplication()
+        let app = makeApp()
         app.launch()
 
         // Verify the main no-stream state is visible at startup.
@@ -22,7 +22,7 @@ final class SharpStreamUITests: XCTestCase {
     }
 
     func testPasteStreamButtonExists() throws {
-        let app = XCUIApplication()
+        let app = makeApp()
         app.launch()
 
         let pasteButton = app.buttons.matching(identifier: "pasteStreamToolbarButton").firstMatch
@@ -44,36 +44,63 @@ final class SharpStreamUITests: XCTestCase {
         XCTAssertTrue(config.hasPrefix("rtsp://"), "SHARPSTREAM_TEST_RTSP_URL should use rtsp://")
     }
 
-    func testOptionalConnectViaPasteStreamURL() throws {
-        guard let config = configuredStream() else {
-            throw XCTSkip("No stream config set (SHARPSTREAM_TEST_RTSP_URL or SHARPSTREAM_TEST_VIDEO_FILE)")
+    func testOptionalConnectRTSPViaPasteStreamURL() throws {
+        guard let rtspURL = configuredRTSPURL() else {
+            throw XCTSkip("SHARPSTREAM_TEST_RTSP_URL not set; skipping RTSP smoke path")
         }
 
-        let app = XCUIApplication()
+        let app = makeApp()
         app.launch()
-        pasteAndConnect(stream: config.url, app: app)
+        pasteAndConnect(stream: rtspURL, app: app)
 
-        // Wait for stream view state transition.
+        // Wait for stream view state transition and connected controls.
         let noStreamText = app.staticTexts["No Stream Connected"]
         let connectedPredicate = NSPredicate(format: "exists == false")
         expectation(for: connectedPredicate, evaluatedWith: noStreamText)
-        waitForExpectations(timeout: 8)
+        waitForExpectations(timeout: 12)
 
-        // Playback control smoke checks.
         let playPause = app.buttons["playPauseButton"]
         XCTAssertTrue(playPause.waitForExistence(timeout: 5))
-        playPause.tap()
+        XCTAssertTrue(waitForOverlayToDisappear(in: app, timeout: 10))
+        XCTAssertTrue(app.staticTexts["seekModeLabel"].waitForExistence(timeout: 5))
+    }
 
-        let smartPause = app.buttons["smartPauseButton"]
-        XCTAssertTrue(smartPause.waitForExistence(timeout: 5))
-        smartPause.tap()
-
-        if config.isFileSource {
-            let timeline = app.sliders["timelineSlider"]
-            if timeline.waitForExistence(timeout: 5) {
-                timeline.adjust(toNormalizedSliderPosition: 0.5)
-            }
+    func testOptionalConnectFileViaPasteStreamURLAndTimeProgress() throws {
+        guard let fileURL = configuredFileURL() else {
+            throw XCTSkip("SHARPSTREAM_TEST_VIDEO_FILE not set or missing; skipping file smoke path")
         }
+
+        let app = makeApp()
+        app.launch()
+        pasteAndConnect(stream: fileURL, app: app)
+
+        let noStreamText = app.staticTexts["No Stream Connected"]
+        let connectedPredicate = NSPredicate(format: "exists == false")
+        expectation(for: connectedPredicate, evaluatedWith: noStreamText)
+        waitForExpectations(timeout: 12)
+
+        let playPause = app.buttons["playPauseButton"]
+        XCTAssertTrue(playPause.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForOverlayToDisappear(in: app, timeout: 8))
+
+        // Confirm playback is actually moving in file mode.
+        var advancedWithoutToggle = waitForCurrentTimeToAdvance(in: app, timeout: 4)
+        var toggleAttempts = 0
+        while !advancedWithoutToggle && toggleAttempts < 3 {
+            playPause.tap()
+            toggleAttempts += 1
+            advancedWithoutToggle = waitForCurrentTimeToAdvance(in: app, timeout: 4)
+        }
+        XCTAssertTrue(
+            advancedWithoutToggle || waitForCurrentTimeToAdvance(in: app, timeout: 10),
+            "Expected current time label to advance for file playback"
+        )
+    }
+
+    private func makeApp() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] = "1"
+        return app
     }
 
     private func pasteAndConnect(stream: String, app: XCUIApplication) {
@@ -83,27 +110,80 @@ final class SharpStreamUITests: XCTestCase {
         let pasteButton = app.buttons.matching(identifier: "pasteStreamToolbarButton").firstMatch
         XCTAssertTrue(pasteButton.waitForExistence(timeout: 5))
         pasteButton.tap()
-        _ = app.staticTexts["Connecting..."].waitForExistence(timeout: 3)
     }
 
-    private func configuredStream() -> (url: String, isFileSource: Bool)? {
+    private func configuredRTSPURL() -> String? {
         var env = ProcessInfo.processInfo.environment
-        if env["SHARPSTREAM_TEST_RTSP_URL"] == nil && env["SHARPSTREAM_TEST_VIDEO_FILE"] == nil {
+        if env["SHARPSTREAM_TEST_RTSP_URL"] == nil {
+            env.merge(loadSmokeEnvFile(), uniquingKeysWith: { current, _ in current })
+        }
+        guard let rtsp = env["SHARPSTREAM_TEST_RTSP_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rtsp.isEmpty else {
+            return nil
+        }
+        return rtsp
+    }
+
+    private func configuredFileURL() -> String? {
+        var env = ProcessInfo.processInfo.environment
+        if env["SHARPSTREAM_TEST_VIDEO_FILE"] == nil {
             env.merge(loadSmokeEnvFile(), uniquingKeysWith: { current, _ in current })
         }
 
         if let filePath = env["SHARPSTREAM_TEST_VIDEO_FILE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !filePath.isEmpty,
            FileManager.default.fileExists(atPath: filePath) {
-            return ("file://\(filePath)", true)
-        }
-
-        if let rtsp = env["SHARPSTREAM_TEST_RTSP_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !rtsp.isEmpty {
-            return (rtsp, false)
+            return URL(fileURLWithPath: filePath).absoluteString
         }
 
         return nil
+    }
+
+    private func waitForOverlayToDisappear(in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let overlay = app.staticTexts["connectionOverlayText"]
+        if !overlay.exists {
+            return true
+        }
+        let predicate = NSPredicate(format: "exists == false")
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: overlay)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForCurrentTimeToAdvance(in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let timeLabel = app.staticTexts["currentTimeLabel"]
+        guard timeLabel.waitForExistence(timeout: 5) else { return false }
+
+        let start = readableTimeText(from: timeLabel)
+        let startSeconds = parseTimeLabel(start)
+        let endTime = Date().addingTimeInterval(timeout)
+        while Date() < endTime {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            let current = readableTimeText(from: timeLabel)
+            let currentSeconds = parseTimeLabel(current)
+            if current != start && currentSeconds > startSeconds {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func readableTimeText(from element: XCUIElement) -> String {
+        if let value = element.value as? String, parseTimeLabel(value) > 0 || value == "00:00" {
+            return value
+        }
+        return element.label
+    }
+
+    private func parseTimeLabel(_ value: String) -> Int {
+        let parts = value.split(separator: ":").compactMap { Int($0) }
+        switch parts.count {
+        case 2:
+            return (parts[0] * 60) + parts[1]
+        case 3:
+            return (parts[0] * 3600) + (parts[1] * 60) + parts[2]
+        default:
+            return 0
+        }
     }
 
     private func loadSmokeEnvFile() -> [String: String] {

@@ -83,8 +83,12 @@ struct MainWindow: View {
     
     private func pasteStreamURL() {
         let pasteboard = NSPasteboard.general
-        guard let urlString = pasteboard.string(forType: .string),
-              !urlString.isEmpty else {
+        guard let rawURLString = pasteboard.string(forType: .string) else {
+            return
+        }
+
+        let urlString = rawURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !urlString.isEmpty else {
             return
         }
         
@@ -219,6 +223,10 @@ struct MainWindow: View {
             if let userInfo = notification.userInfo,
                let message = userInfo["message"] as? String {
                 print("🔔 Received MPV error notification: \(message)")
+                if ProcessInfo.processInfo.environment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] == "1" {
+                    // Keep UI automation and smoke runs non-blocking.
+                    return
+                }
                 let alert = NSAlert()
                 alert.messageText = "Playback Error"
                 alert.informativeText = message
@@ -267,10 +275,17 @@ struct VideoPlayerView: View {
     var body: some View {
         let streamManager = appState.streamManager
         let connectionState = streamManager.connectionState
+        let hasActivePlayer = streamManager.player != nil && connectionState != .disconnected
 
         return ZStack {
-            // MPVKit video player
-            if connectionState == .disconnected {
+            if hasActivePlayer {
+                MPVVideoView(player: streamManager.player)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("videoSurface")
+                    .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
+                        handleFileDrop(providers: providers)
+                    }
+            } else {
                 Rectangle()
                     .fill(isDragOver ? Color.gray.opacity(0.3) : Color.black)
                     .overlay(
@@ -286,6 +301,7 @@ struct VideoPlayerView: View {
                                     .font(.system(size: 48))
                                     .foregroundColor(.secondary)
                                 Text("No Stream Connected")
+                                    .accessibilityIdentifier("noStreamLabel")
                                     .foregroundColor(.secondary)
                                 Text("Drag and drop a video file (MP4, MKV, MOV, etc.) to play")
                                     .font(.caption)
@@ -297,24 +313,22 @@ struct VideoPlayerView: View {
                     .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
                         handleFileDrop(providers: providers)
                     }
-            } else if connectionState == .connecting {
-                Rectangle()
-                    .fill(Color.black)
-                    .overlay(
-                        VStack {
-                            ProgressView()
-                            Text("Connecting...")
-                                .foregroundColor(.secondary)
-                                .padding(.top)
-                        }
-                    )
-            } else {
-                // Show MPVKit video view when connected
-                MPVVideoView(player: streamManager.player)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
-                        handleFileDrop(providers: providers)
-                    }
+            }
+
+            switch connectionState {
+            case .connecting:
+                connectionOverlay(text: "Connecting...", showsProgress: true)
+            case .reconnecting:
+                connectionOverlay(
+                    text: "Reconnecting (attempt \(max(streamManager.reconnectAttempt, 1)))...",
+                    showsProgress: true
+                )
+            case .error(let message):
+                if hasActivePlayer {
+                    connectionOverlay(text: "Playback error: \(message)", showsProgress: false)
+                }
+            case .connected, .disconnected:
+                EmptyView()
             }
             
             // OCR Overlay
@@ -322,6 +336,23 @@ struct VideoPlayerView: View {
                 OCROverlayView()
             }
         }
+    }
+
+    @ViewBuilder
+    private func connectionOverlay(text: String, showsProgress: Bool) -> some View {
+        VStack(spacing: 8) {
+            if showsProgress {
+                ProgressView()
+            }
+            Text(text)
+                .accessibilityIdentifier("connectionOverlayText")
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
     
     private func handleFileDrop(providers: [NSItemProvider]) -> Bool {

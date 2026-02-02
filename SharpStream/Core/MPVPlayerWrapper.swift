@@ -529,17 +529,22 @@ class MPVPlayerWrapper: ObservableObject {
         }
     }
     
-    func seek(to time: TimeInterval) {
+    @discardableResult
+    func seek(to time: TimeInterval) -> Bool {
         #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
+        guard let handle = mpvHandle else { return false }
+        guard duration > 0 else {
+            print("⚠️ Absolute seek unavailable: stream duration is unknown")
+            return false
+        }
         
         // Clamp time to valid range
-        let clampedTime = max(0, min(time, duration > 0 ? duration : time))
+        let clampedTime = max(0, min(time, duration))
         
         // Check if this is a significant change (avoid micro-seeks)
         let currentPlayerTime = self.currentTime
         if abs(clampedTime - currentPlayerTime) < 0.1 {
-            return // Too small a change, skip
+            return true // Too small a change, treat as successful no-op
         }
         
         print("🎯 Seeking to: \(String(format: "%.1f", clampedTime))s (current: \(String(format: "%.1f", currentPlayerTime))s)")
@@ -573,23 +578,8 @@ class MPVPlayerWrapper: ObservableObject {
                     let fallbackError = fallbackErrorString != nil ? String(cString: fallbackErrorString!) : "Unknown error"
                     print("❌ Absolute seek also failed: \(fallbackResult) (\(fallbackError))")
                     // Don't update UI if seek failed - let it stay at current position
-                    return
+                    return false
                 }
-            }
-        } else {
-            // No duration available (live stream), use absolute time
-            let command = "seek \(clampedTime) absolute"
-            let result = mpv_command_string(handle, command)
-            
-            if result == 0 {
-                seekSucceeded = true
-                print("✅ Seek command succeeded (absolute time)")
-            } else {
-                let errorString = mpv_error_string(result)
-                let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
-                print("❌ Seek failed: \(result) (\(error))")
-                // Don't update UI if seek failed
-                return
             }
         }
         
@@ -628,14 +618,30 @@ class MPVPlayerWrapper: ObservableObject {
                 self?.updateCurrentTime()
             }
         }
+        return seekSucceeded
+        #else
+        return false
         #endif
     }
     
-    func seek(offset: TimeInterval) {
+    @discardableResult
+    func seek(offset: TimeInterval) -> Bool {
         #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
+        guard let handle = mpvHandle else { return false }
         let command = "seek \(offset) relative"
-        mpv_command_string(handle, command)
+        let result = mpv_command_string(handle, command)
+        if result == 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.updateCurrentTime()
+            }
+            return true
+        }
+        let errorString = mpv_error_string(result)
+        let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
+        print("❌ Relative seek failed: \(result) (\(error))")
+        return false
+        #else
+        return false
         #endif
     }
     

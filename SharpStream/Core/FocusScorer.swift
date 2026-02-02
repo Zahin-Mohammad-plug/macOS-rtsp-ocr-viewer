@@ -60,11 +60,16 @@ class FocusScorer: ObservableObject {
         return frameScore
     }
     
-    func findBestFrame(in timeRange: TimeInterval) -> FrameScore? {
-        let cutoffTime = Date().addingTimeInterval(-timeRange)
-        let recentFrames = scoreHistory.filter { $0.timestamp >= cutoffTime }
+    func findBestFrame(in timeRange: TimeInterval, now: Date = Date()) -> FrameScore? {
+        let cutoffTime = now.addingTimeInterval(-timeRange)
+        let recentFrames = scoreHistory.filter { $0.timestamp >= cutoffTime && $0.timestamp <= now }
         
         return recentFrames.max()
+    }
+
+    func recentFrameCount(in timeRange: TimeInterval, now: Date = Date()) -> Int {
+        let cutoffTime = now.addingTimeInterval(-timeRange)
+        return scoreHistory.filter { $0.timestamp >= cutoffTime && $0.timestamp <= now }.count
     }
     
     func getCurrentScore() -> Double? {

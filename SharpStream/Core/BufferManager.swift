@@ -47,7 +47,7 @@ actor BufferManager {
         maxDiskBufferDuration = duration
     }
     
-    private var bufferIndexPath: URL
+    private let bufferIndexPath: URL
     private var indexSaveTask: Task<Void, Never>?
     
     private(set) var bufferSizePreset: BufferSizePreset = .medium
@@ -57,17 +57,24 @@ actor BufferManager {
         updateBufferSize()
     }
     
-    init() {
+    init(diskBufferPath: URL? = nil, bufferIndexPath: URL? = nil) {
         let tempDir = FileManager.default.temporaryDirectory
-        diskBufferPath = tempDir.appendingPathComponent("SharpStreamBuffer", isDirectory: true)
-        
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let sharpStreamDir = appSupport.appendingPathComponent("SharpStream")
-        bufferIndexPath = sharpStreamDir.appendingPathComponent("buffer_index.json")
+        self.diskBufferPath = diskBufferPath ?? tempDir.appendingPathComponent("SharpStreamBuffer", isDirectory: true)
+
+        if let bufferIndexPath {
+            self.bufferIndexPath = bufferIndexPath
+        } else {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            let sharpStreamDir = appSupport.appendingPathComponent("SharpStream", isDirectory: true)
+            self.bufferIndexPath = sharpStreamDir.appendingPathComponent("buffer_index.json")
+        }
         
         // Create directories
-        try? FileManager.default.createDirectory(at: diskBufferPath, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: sharpStreamDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: self.diskBufferPath, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            at: self.bufferIndexPath.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         
         // Initialize buffer size based on default preset
         // Use direct value to avoid actor isolation issues in init
@@ -356,14 +363,15 @@ actor BufferManager {
     
     // MARK: - Crash Recovery
     
-    func startIndexSaveTimer(streamURL: String? = nil) {
+    func startIndexSaveTimer(streamURL: String? = nil, saveInterval: TimeInterval = 30.0) {
         // Cancel any existing task
         indexSaveTask?.cancel()
         // Start a new repeating task
         let url = streamURL // Capture URL for closure
+        let interval = max(0.1, saveInterval)
         indexSaveTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(for: .seconds(interval))
                 saveBufferIndex(streamURL: url)
             }
         }
@@ -404,13 +412,8 @@ actor BufferManager {
         }
     }
     
-    nonisolated func loadRecoveryData() -> BufferRecoveryData? {
-        // Access bufferIndexPath through a nonisolated computed property
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let sharpStreamDir = appSupport.appendingPathComponent("SharpStream")
-        let path = sharpStreamDir.appendingPathComponent("buffer_index.json")
-        
-        guard let data = try? Data(contentsOf: path) else {
+    private func loadRecoveryData() -> BufferRecoveryData? {
+        guard let data = try? Data(contentsOf: bufferIndexPath) else {
             return nil
         }
         

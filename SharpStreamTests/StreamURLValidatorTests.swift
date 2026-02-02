@@ -75,4 +75,61 @@ final class StreamURLValidatorTests: XCTestCase {
         XCTAssertTrue(config.streamList.isEmpty)
         XCTAssertNil(config.preferredStreamForSmokeTests)
     }
+
+    func testSeekModeClassification() {
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .file, duration: nil), .disabled)
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .file, duration: 120), .absolute)
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .rtsp, duration: nil), .liveBuffered)
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .rtsp, duration: 120), .absolute)
+    }
+
+    func testReconnectPolicyNetworkOnly() {
+        XCTAssertTrue(StreamManager.shouldAutoReconnect(protocolType: .rtsp, userInitiatedDisconnect: false))
+        XCTAssertTrue(StreamManager.shouldAutoReconnect(protocolType: .https, userInitiatedDisconnect: false))
+        XCTAssertFalse(StreamManager.shouldAutoReconnect(protocolType: .file, userInitiatedDisconnect: false))
+        XCTAssertFalse(StreamManager.shouldAutoReconnect(protocolType: .rtsp, userInitiatedDisconnect: true))
+    }
+
+    func testRecentStreamUseCountIncrements() throws {
+        let baseDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("stream-db-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: baseDirectory) }
+
+        let database = StreamDatabase(baseDirectory: baseDirectory)
+        database.clearRecentStreams()
+
+        database.addRecentStream(url: "rtsp://example.com/live")
+        database.addRecentStream(url: "rtsp://example.com/live")
+        database.addRecentStream(url: "file:///tmp/test.mp4")
+
+        let recents = database.getRecentStreams(limit: 5)
+        let rtspEntry = recents.first(where: { $0.url.hasPrefix("rtsp://example.com/live") })
+        XCTAssertNotNil(rtspEntry, "Expected RTSP entry in recents. Got: \(recents.map { "\($0.url) (\($0.useCount))" })")
+        XCTAssertGreaterThanOrEqual(rtspEntry?.useCount ?? 0, 2)
+    }
+
+    func testBufferIndexSaveLifecycle() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("buffer-tests-\(UUID().uuidString)", isDirectory: true)
+        let diskPath = tempRoot.appendingPathComponent("disk", isDirectory: true)
+        let indexPath = tempRoot.appendingPathComponent("buffer_index.json")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let bufferManager = BufferManager(diskBufferPath: diskPath, bufferIndexPath: indexPath)
+
+        await bufferManager.startIndexSaveTimer(streamURL: "rtsp://example.com/live", saveInterval: 0.1)
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        await bufferManager.stopIndexSaveTask()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: indexPath.path))
+        let recovery = await bufferManager.getRecoveryData()
+        let recoveredURL = await MainActor.run { recovery?.streamURL }
+        XCTAssertEqual(recoveredURL, "rtsp://example.com/live")
+
+        let firstModified = try indexPath.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        let secondModified = try indexPath.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+
+        XCTAssertEqual(firstModified, secondModified, "Index should stop updating after stopIndexSaveTask()")
+    }
 }

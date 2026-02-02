@@ -41,6 +41,7 @@ struct AppMenu: Commands {
                     
                     Button("Clear Recent") {
                         appState.streamDatabase.clearRecentStreams()
+                        NotificationCenter.default.post(name: .recentStreamsUpdated, object: nil)
                     }
                 }
             }

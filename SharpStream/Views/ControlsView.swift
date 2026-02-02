@@ -12,6 +12,7 @@ import QuartzCore
 struct ControlsView: View {
     @EnvironmentObject var appState: AppState
     @AppStorage("lookbackWindow") private var lookbackWindow: Double = 3.0
+    @AppStorage("autoOCROnSmartPause") private var autoOCROnSmartPause: Bool = true
     @State private var isPlaying = false
     @State private var currentTime: TimeInterval = 0
     @State private var duration: TimeInterval = 0
@@ -26,9 +27,19 @@ struct ControlsView: View {
     @State private var sliderChangeDebounceTimer: Timer?
     @State private var lastUserSliderValue: TimeInterval = -1
     @State private var lastSeekCompletionTime: TimeInterval = 0 // Track when seek actually completed
+    @State private var controlStatusMessage: String?
+    @State private var messageClearWorkItem: DispatchWorkItem?
     
     private var player: MPVPlayerWrapper? {
         appState.streamManager.player
+    }
+
+    private var seekMode: SeekMode {
+        appState.streamManager.seekMode
+    }
+
+    private var canScrubTimeline: Bool {
+        seekMode.allowsTimelineScrubbing && duration > 0
     }
     
     var body: some View {
@@ -39,12 +50,15 @@ struct ControlsView: View {
                 Text(formatTime(currentTime))
                     .font(.system(.body, design: .monospaced))
                     .frame(width: 60, alignment: .leading)
+                    .accessibilityIdentifier("currentTimeLabel")
                 
                 Slider(value: $sliderValue, in: 0...max(duration, 1)) {
                     Text("Timeline")
                 }
                 .accessibilityIdentifier("timelineSlider")
+                .disabled(!canScrubTimeline || seekInProgress)
                 .onChange(of: sliderValue) { oldValue, newValue in
+                    guard canScrubTimeline else { return }
                     // Only handle user-initiated changes, not programmatic updates
                     // Also don't handle if a seek is already in progress
                     if !isUpdatingSliderProgrammatically && !seekInProgress {
@@ -101,6 +115,23 @@ struct ControlsView: View {
                 Text(formatTime(duration))
                     .font(.system(.body, design: .monospaced))
                     .frame(width: 60, alignment: .trailing)
+                    .accessibilityIdentifier("durationTimeLabel")
+            }
+
+            HStack(spacing: 8) {
+                Text(seekModeLabel)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .accessibilityIdentifier("seekModeLabel")
+                Spacer()
+                if let controlStatusMessage {
+                    Text(controlStatusMessage)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("controlStatusMessage")
+                }
             }
             
             HStack {
@@ -118,6 +149,7 @@ struct ControlsView: View {
                 }
                 .accessibilityIdentifier("rewind10Button")
                 .keyboardShortcut(.leftArrow, modifiers: [.command])
+                .disabled(!seekMode.allowsRelativeSeek || seekInProgress)
                 
                 // Forward 10s
                 Button(action: { seek(offset: 10) }) {
@@ -125,6 +157,7 @@ struct ControlsView: View {
                 }
                 .accessibilityIdentifier("forward10Button")
                 .keyboardShortcut(.rightArrow, modifiers: [.command])
+                .disabled(!seekMode.allowsRelativeSeek || seekInProgress)
                 
                 Spacer()
                 
@@ -133,12 +166,14 @@ struct ControlsView: View {
                     Image(systemName: "chevron.left")
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [])
+                .disabled(seekMode != .absolute)
                 
                 // Frame forward
                 Button(action: { stepFrame(backward: false) }) {
                     Image(systemName: "chevron.right")
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [])
+                .disabled(seekMode != .absolute)
                 
                 Spacer()
                 
@@ -208,13 +243,17 @@ struct ControlsView: View {
                             let inCooldown = timeSinceLastSeek < 1.5
                             let sliderThreshold = inCooldown ? 0.3 : 0.1 // Larger threshold during cooldown
 
-                            if !self.isDraggingSlider && !self.seekInProgress {
+                            if self.canScrubTimeline && !self.isDraggingSlider && !self.seekInProgress {
                                 // Only update if the change is significant to avoid micro-updates triggering onChange
                                 if abs(newTime - self.sliderValue) > sliderThreshold {
                                     self.isUpdatingSliderProgrammatically = true
                                     self.sliderValue = newTime
                                     self.isUpdatingSliderProgrammatically = false
                                 }
+                            } else if !self.canScrubTimeline && self.sliderValue != 0 {
+                                self.isUpdatingSliderProgrammatically = true
+                                self.sliderValue = 0
+                                self.isUpdatingSliderProgrammatically = false
                             }
                             self.duration = newDuration
                         }
@@ -231,6 +270,8 @@ struct ControlsView: View {
             timerCancellable = nil
             sliderChangeDebounceTimer?.invalidate()
             sliderChangeDebounceTimer = nil
+            messageClearWorkItem?.cancel()
+            messageClearWorkItem = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TogglePlayPause"))) { _ in
             togglePlayPause()
@@ -262,8 +303,18 @@ struct ControlsView: View {
     }
     
     private func seek(to time: TimeInterval) {
+        guard canScrubTimeline else {
+            showControlMessage("Timeline seeking is unavailable for this stream.")
+            return
+        }
+
         // Don't seek if already seeking
         if seekInProgress {
+            return
+        }
+
+        guard let player = player else {
+            showControlMessage("No active player available for seek.")
             return
         }
         
@@ -271,7 +322,7 @@ struct ControlsView: View {
         let clampedTime = max(0, min(time, max(duration, 1)))
         
         // Only seek if the change is significant (avoid micro-seeks)
-        let currentPlayerTime = player?.currentTime ?? 0
+        let currentPlayerTime = player.currentTime
         if abs(clampedTime - currentPlayerTime) < 0.1 {
             return // Too small a change, skip
         }
@@ -286,7 +337,13 @@ struct ControlsView: View {
         isDraggingSlider = false
         lastUserSliderValue = -1
         
-        player?.seek(to: clampedTime)
+        let didSeek = player.seek(to: clampedTime)
+        if !didSeek {
+            seekInProgress = false
+            lastSeekTime = -1
+            showControlMessage("Seek command was rejected by the player.")
+            return
+        }
         
         // Update local state immediately for UI responsiveness
         currentTime = clampedTime
@@ -318,11 +375,33 @@ struct ControlsView: View {
     }
     
     private func seek(offset: TimeInterval) {
-        // Read actual current time from player, not local state (which may be stale)
         guard let player = player else { return }
-        let actualCurrentTime = player.currentTime
-        let newTime = max(0, min(duration, actualCurrentTime + offset))
-        seek(to: newTime)
+
+        switch seekMode {
+        case .absolute:
+            // Read actual current time from player, not local state (which may be stale)
+            let actualCurrentTime = player.currentTime
+            let newTime = max(0, min(duration, actualCurrentTime + offset))
+            seek(to: newTime)
+
+        case .liveBuffered:
+            if seekInProgress {
+                return
+            }
+            seekInProgress = true
+            let didSeek = player.seek(offset: offset)
+            seekInProgress = false
+            if didSeek {
+                lastSeekCompletionTime = CACurrentMediaTime()
+                let direction = offset < 0 ? "back" : "forward"
+                showControlMessage("Live seek requested (\(direction) \(Int(abs(offset)))s).")
+            } else {
+                showControlMessage("Live seek failed for this stream.")
+            }
+
+        case .disabled:
+            showControlMessage("Seeking is disabled for this stream.")
+        }
     }
     
     private func stepFrame(backward: Bool) {
@@ -334,7 +413,7 @@ struct ControlsView: View {
         // Initial sync with player state on appear
         guard let player = player else { return }
         currentTime = player.currentTime
-        sliderValue = player.currentTime
+        sliderValue = canScrubTimeline ? player.currentTime : 0
         isPlaying = player.isPlaying
         duration = player.duration
         playbackSpeed = player.playbackSpeed
@@ -342,7 +421,7 @@ struct ControlsView: View {
     }
     
     private func performSmartPause() {
-        Task {
+        Task { @MainActor in
             // Pause playback
             player?.pause()
             
@@ -350,24 +429,45 @@ struct ControlsView: View {
             let lookbackWindow = TimeInterval(lookbackWindow)
             
             // Find best frame
-            if let bestFrame = appState.focusScorer.findBestFrame(in: lookbackWindow) {
-                // Seek to best frame
-                if let player = player {
-                    let currentTime = player.currentTime
-                    let seekTime = bestFrame.timestamp.timeIntervalSince(Date()) + currentTime
-                    player.seek(to: max(0, seekTime))
+            guard let bestFrame = appState.focusScorer.findBestFrame(in: lookbackWindow) else {
+                showControlMessage("Smart Pause found no recent frames in the lookback window.")
+                return
+            }
+
+            let frameAge = Date().timeIntervalSince(bestFrame.timestamp)
+            let maxStaleness = max(lookbackWindow + 1.0, 8.0)
+            guard frameAge >= 0, frameAge <= maxStaleness else {
+                showControlMessage("Best frame is stale; try again while playback is active.")
+                return
+            }
+
+            // Best-effort seek behavior based on explicit capability.
+            if let player = player {
+                switch seekMode {
+                case .absolute:
+                    let targetTime = max(0, player.currentTime - frameAge)
+                    if !player.seek(to: targetTime) {
+                        showControlMessage("Smart Pause could not seek to the selected frame.")
+                    }
+                case .liveBuffered:
+                    if !player.seek(offset: -frameAge) {
+                        showControlMessage("Smart Pause could not perform live buffered seek.")
+                    }
+                case .disabled:
+                    showControlMessage("Smart Pause selected a frame, but seek is disabled.")
                 }
-                
-                // Perform OCR if enabled
-                if appState.ocrEngine.isEnabled {
-                    if let pixelBuffer = bestFrame.pixelBuffer {
-                        appState.ocrEngine.recognizeText(in: pixelBuffer) { result in
-                            // Update app state with OCR result
-                            DispatchQueue.main.async {
-                                appState.currentOCRResult = result
-                            }
+            }
+
+            // Perform OCR only when preference and runtime state both allow it.
+            if autoOCROnSmartPause && appState.ocrEngine.isEnabled {
+                if let pixelBuffer = bestFrame.pixelBuffer {
+                    appState.ocrEngine.recognizeText(in: pixelBuffer) { result in
+                        DispatchQueue.main.async {
+                            appState.currentOCRResult = result
                         }
                     }
+                } else {
+                    showControlMessage("Smart Pause found a frame but pixel data is unavailable.")
                 }
             }
         }
@@ -387,5 +487,27 @@ struct ControlsView: View {
         let minutes = Int(time) / 60
         let seconds = Int(time) % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private var seekModeLabel: String {
+        switch seekMode {
+        case .absolute:
+            return "Seek Mode: Timeline"
+        case .liveBuffered:
+            return "Seek Mode: Live Buffer"
+        case .disabled:
+            return "Seek Mode: Disabled"
+        }
+    }
+
+    private func showControlMessage(_ message: String) {
+        controlStatusMessage = message
+        messageClearWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem {
+            self.controlStatusMessage = nil
+        }
+        messageClearWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: workItem)
     }
 }
