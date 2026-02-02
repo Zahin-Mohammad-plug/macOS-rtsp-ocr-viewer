@@ -57,6 +57,7 @@ struct SharpStreamApp: App {
         .windowStyle(.automatic)
         .defaultSize(width: 1200, height: 800)
         .commands {
+            AppMenu(appState: appState)
             CommandGroup(replacing: .newItem) {
                 Button("New Window") {
                     // Allow multiple windows if needed

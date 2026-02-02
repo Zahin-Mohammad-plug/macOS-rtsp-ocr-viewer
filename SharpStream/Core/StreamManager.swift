@@ -18,6 +18,8 @@ class StreamManager: ObservableObject {
     weak var focusScorer: FocusScorer?
     
     private var reconnectTimer: Timer?
+    private var connectionTimeoutTimer: Timer?
+    private var metadataTimer: Timer?
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 10
     private var reconnectDelay: TimeInterval = 1.0
@@ -46,10 +48,18 @@ class StreamManager: ObservableObject {
             print("🧹 Cleaning up existing player")
             oldPlayer.cleanup()
         }
+        metadataTimer?.invalidate()
+        metadataTimer = nil
+        connectionTimeoutTimer?.invalidate()
+        connectionTimeoutTimer = nil
         
         // Create new player instance
         print("🎮 Creating new MPVPlayerWrapper")
         let newPlayer = MPVPlayerWrapper()
+        newPlayer.eventHandler = { [weak self] event in
+            guard let self = self else { return }
+            self.handlePlayerEvent(event)
+        }
         
         // Set up frame callback for buffering and processing
         newPlayer.setFrameCallback { [weak self] pixelBuffer, timestamp in
@@ -90,25 +100,11 @@ class StreamManager: ObservableObject {
         
         self.player = newPlayer
         
-        // Update connection state after a short delay to allow connection
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self = self else {
-                print("⚠️ StreamManager deallocated during connection delay")
-                return
-            }
-            print("⏱️ Connection delay elapsed, checking player state...")
-            print("   Player exists: \(self.player != nil)")
-            print("   Is playing: \(self.player?.isPlaying ?? false)")
-            
-            self.connectionState = .connected
-            self.streamStats.connectionStatus = .connected
-            self.reconnectAttempts = 0
-            self.reconnectDelay = 1.0
-            
-            print("✅ Connection state set to: connected")
-            
-            // Extract initial metadata
-            self.updateMetadataFromPlayer()
+        // Fail fast if player never loads the stream.
+        connectionTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 12.0, repeats: false) { [weak self] _ in
+            guard let self = self, self.connectionState == .connecting else { return }
+            self.connectionState = .error("Connection timeout")
+            self.streamStats.connectionStatus = .error("Connection timeout")
         }
         
         // Update last used in database
@@ -123,7 +119,8 @@ class StreamManager: ObservableObject {
         updateStats(bitrate: metadata.bitrate, resolution: metadata.resolution, frameRate: metadata.frameRate)
         
         // Update metadata periodically
-        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+        metadataTimer?.invalidate()
+        metadataTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
             guard let self = self, let player = self.player else {
                 timer.invalidate()
                 return
@@ -136,10 +133,17 @@ class StreamManager: ObservableObject {
     func disconnect() {
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+        connectionTimeoutTimer?.invalidate()
+        connectionTimeoutTimer = nil
+        metadataTimer?.invalidate()
+        metadataTimer = nil
         
         // Clean up player
         player?.cleanup()
         player = nil
+        Task { [weak self] in
+            await self?.bufferManager?.stopIndexSaveTask()
+        }
         
         connectionState = .disconnected
         streamStats.connectionStatus = .disconnected
@@ -172,5 +176,38 @@ class StreamManager: ObservableObject {
         streamStats.resolution = resolution
         streamStats.frameRate = frameRate
     }
-}
 
+    private func handlePlayerEvent(_ event: MPVPlayerEvent) {
+        switch event {
+        case .fileLoaded:
+            connectionTimeoutTimer?.invalidate()
+            connectionTimeoutTimer = nil
+            connectionState = .connected
+            streamStats.connectionStatus = .connected
+            reconnectAttempts = 0
+            reconnectDelay = 1.0
+            updateMetadataFromPlayer()
+
+        case .loadFailed(let message):
+            connectionTimeoutTimer?.invalidate()
+            connectionTimeoutTimer = nil
+            connectionState = .error(message)
+            streamStats.connectionStatus = .error(message)
+
+        case .endFile:
+            if connectionState == .connecting {
+                connectionState = .error("Playback ended before stream fully loaded")
+                streamStats.connectionStatus = .error("Playback ended before stream fully loaded")
+            } else if connectionState == .connected {
+                connectionState = .disconnected
+                streamStats.connectionStatus = .disconnected
+            }
+
+        case .shutdown:
+            if connectionState != .disconnected {
+                connectionState = .disconnected
+                streamStats.connectionStatus = .disconnected
+            }
+        }
+    }
+}

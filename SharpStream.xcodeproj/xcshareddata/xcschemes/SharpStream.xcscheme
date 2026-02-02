@@ -21,6 +21,34 @@
                ReferencedContainer = "container:SharpStream.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B2A1E4A13E1110010081A105"
+               BuildableName = "SharpStreamTests.xctest"
+               BlueprintName = "SharpStreamTests"
+               ReferencedContainer = "container:SharpStream.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B2A1E4A13E1110010081B105"
+               BuildableName = "SharpStreamUITests.xctest"
+               BlueprintName = "SharpStreamUITests"
+               ReferencedContainer = "container:SharpStream.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -33,6 +61,30 @@
             reference = "container:TestPlan.xctestplan">
          </TestPlanReference>
       </TestPlans>
+      <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B2A1E4A13E1110010081A105"
+               BuildableName = "SharpStreamTests.xctest"
+               BlueprintName = "SharpStreamTests"
+               ReferencedContainer = "container:SharpStream.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B2A1E4A13E1110010081B105"
+               BuildableName = "SharpStreamUITests.xctest"
+               BlueprintName = "SharpStreamUITests"
+               ReferencedContainer = "container:SharpStream.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

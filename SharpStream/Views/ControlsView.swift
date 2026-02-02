@@ -11,6 +11,7 @@ import QuartzCore
 
 struct ControlsView: View {
     @EnvironmentObject var appState: AppState
+    @AppStorage("lookbackWindow") private var lookbackWindow: Double = 3.0
     @State private var isPlaying = false
     @State private var currentTime: TimeInterval = 0
     @State private var duration: TimeInterval = 0
@@ -42,6 +43,7 @@ struct ControlsView: View {
                 Slider(value: $sliderValue, in: 0...max(duration, 1)) {
                     Text("Timeline")
                 }
+                .accessibilityIdentifier("timelineSlider")
                 .onChange(of: sliderValue) { oldValue, newValue in
                     // Only handle user-initiated changes, not programmatic updates
                     // Also don't handle if a seek is already in progress
@@ -107,18 +109,21 @@ struct ControlsView: View {
                     Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                         .frame(width: 30, height: 30)
                 }
+                .accessibilityIdentifier("playPauseButton")
                 .keyboardShortcut(.space, modifiers: [])
                 
                 // Rewind 10s
                 Button(action: { seek(offset: -10) }) {
                     Image(systemName: "gobackward.10")
                 }
+                .accessibilityIdentifier("rewind10Button")
                 .keyboardShortcut(.leftArrow, modifiers: [.command])
                 
                 // Forward 10s
                 Button(action: { seek(offset: 10) }) {
                     Image(systemName: "goforward.10")
                 }
+                .accessibilityIdentifier("forward10Button")
                 .keyboardShortcut(.rightArrow, modifiers: [.command])
                 
                 Spacer()
@@ -141,6 +146,7 @@ struct ControlsView: View {
                 Button("Smart Pause") {
                     performSmartPause()
                 }
+                .accessibilityIdentifier("smartPauseButton")
                 .keyboardShortcut("s", modifiers: [.command])
                 
                 Spacer()
@@ -167,11 +173,14 @@ struct ControlsView: View {
                     Slider(value: $volume, in: 0...1) {
                         Text("Volume")
                     }
+                    .accessibilityIdentifier("volumeSlider")
                     .frame(width: 100)
                     .onChange(of: volume) { _, newValue in
                         setVolume(newValue)
                     }
                 }
+
+                ExportView()
             }
         }
         .onAppear {
@@ -222,6 +231,29 @@ struct ControlsView: View {
             timerCancellable = nil
             sliderChangeDebounceTimer?.invalidate()
             sliderChangeDebounceTimer = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TogglePlayPause"))) { _ in
+            togglePlayPause()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SeekBackward"))) { _ in
+            seek(offset: -10)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SeekForward"))) { _ in
+            seek(offset: 10)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StepFrameBackward"))) { _ in
+            stepFrame(backward: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StepFrameForward"))) { _ in
+            stepFrame(backward: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SmartPause"))) { _ in
+            performSmartPause()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SetPlaybackSpeed"))) { notification in
+            if let speed = notification.object as? Double {
+                setPlaybackSpeed(speed)
+            }
         }
     }
     
@@ -314,8 +346,8 @@ struct ControlsView: View {
             // Pause playback
             player?.pause()
             
-            // Get lookback window from preferences (default 3 seconds)
-            let lookbackWindow: TimeInterval = 3.0
+            // Get lookback window from preferences
+            let lookbackWindow = TimeInterval(lookbackWindow)
             
             // Find best frame
             if let bestFrame = appState.focusScorer.findBestFrame(in: lookbackWindow) {

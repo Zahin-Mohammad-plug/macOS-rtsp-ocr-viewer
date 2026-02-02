@@ -16,6 +16,7 @@ struct MainWindow: View {
     @State private var isFullscreen = false
     @AppStorage("windowWidth") private var savedWidth: Double = 1200
     @AppStorage("windowHeight") private var savedHeight: Double = 800
+    @State private var observerTokens: [NSObjectProtocol] = []
     
     var body: some View {
         HSplitView {
@@ -45,6 +46,7 @@ struct MainWindow: View {
                 Button("Paste Stream URL") {
                     pasteStreamURL()
                 }
+                .accessibilityIdentifier("pasteStreamToolbarButton")
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             }
             
@@ -59,7 +61,13 @@ struct MainWindow: View {
             checkRecoveryData()
             restoreWindowState()
             setupWindowConstraints()
-            setupErrorNotifications()
+            if observerTokens.isEmpty {
+                setupErrorNotifications()
+                setupCommandNotifications()
+            }
+        }
+        .onDisappear {
+            removeObservers()
         }
         .frame(width: savedWidth, height: savedHeight)
         .frame(minWidth: 800, minHeight: 600)
@@ -203,7 +211,7 @@ struct MainWindow: View {
     }
     
     private func setupErrorNotifications() {
-        NotificationCenter.default.addObserver(
+        let token = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("MPVError"),
             object: nil,
             queue: .main
@@ -219,6 +227,36 @@ struct MainWindow: View {
                 alert.runModal()
             }
         }
+        observerTokens.append(token)
+    }
+
+    private func setupCommandNotifications() {
+        let center = NotificationCenter.default
+
+        let pasteToken = center.addObserver(
+            forName: NSNotification.Name("PasteStreamURL"),
+            object: nil,
+            queue: .main
+        ) { _ in
+            self.pasteStreamURL()
+        }
+        observerTokens.append(pasteToken)
+
+        let sidebarToken = center.addObserver(
+            forName: NSNotification.Name("ToggleSidebar"),
+            object: nil,
+            queue: .main
+        ) { _ in
+            self.showStreamList.toggle()
+        }
+        observerTokens.append(sidebarToken)
+    }
+
+    private func removeObservers() {
+        for token in observerTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+        observerTokens.removeAll()
     }
 }
 

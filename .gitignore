@@ -115,3 +115,7 @@ Temporary Items
 
 # Application Support
 ~/Library/Application Support/SharpStream/
+
+# Local QA stream configuration (never commit private endpoints)
+.env
+.env.local

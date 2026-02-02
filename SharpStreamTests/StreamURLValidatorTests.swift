@@ -14,6 +14,11 @@ final class StreamURLValidatorTests: XCTestCase {
         let result = StreamURLValidator.validate("rtsp://example.com:554/stream")
         XCTAssertTrue(result.isValid, "Valid RTSP URL should pass validation")
     }
+
+    func testValidRTSPLivePathURL() {
+        let result = StreamURLValidator.validate("rtsp://example.com:554/live")
+        XCTAssertTrue(result.isValid, "Valid RTSP URL with /live path should pass validation")
+    }
     
     func testInvalidRTSPURL() {
         let result = StreamURLValidator.validate("rtsp://")
@@ -48,5 +53,26 @@ final class StreamURLValidatorTests: XCTestCase {
     func testUnknownProtocol() {
         let result = StreamURLValidator.validate("invalid://example.com")
         XCTAssertFalse(result.isValid, "Unknown protocol should fail validation")
+    }
+
+    func testTestStreamConfigParsesPrimaryAndList() {
+        let config = TestStreamConfig(environment: [
+            "SHARPSTREAM_TEST_RTSP_URL": "rtsp://example.com:554/live",
+            "SHARPSTREAM_TEST_VIDEO_FILE": "/tmp/test.mp4",
+            "SHARPSTREAM_TEST_STREAMS": "rtsp://a/live, https://example.com/test.m3u8"
+        ])
+
+        XCTAssertEqual(config.primaryRTSPURL, "rtsp://example.com:554/live")
+        XCTAssertEqual(config.videoFilePath, "/tmp/test.mp4")
+        XCTAssertEqual(config.streamList.count, 2)
+        XCTAssertEqual(config.preferredStreamForSmokeTests, "rtsp://example.com:554/live")
+    }
+
+    func testTestStreamConfigHandlesMissingValues() {
+        let config = TestStreamConfig(environment: [:])
+        XCTAssertNil(config.primaryRTSPURL)
+        XCTAssertNil(config.videoFilePath)
+        XCTAssertTrue(config.streamList.isEmpty)
+        XCTAssertNil(config.preferredStreamForSmokeTests)
     }
 }

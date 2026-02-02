@@ -44,6 +44,7 @@ class MPVVideoNSView: NSView {
     
     private var layoutUpdateTimer: Timer?
     private var windowObserver: NSObjectProtocol?
+    private var windowResizeObserver: NSObjectProtocol?
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -58,6 +59,12 @@ class MPVVideoNSView: NSView {
     deinit {
         layoutUpdateTimer?.invalidate()
         if let observer = windowObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = windowResizeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = windowResizeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -154,6 +161,10 @@ class MPVVideoNSView: NSView {
                 NotificationCenter.default.removeObserver(observer)
                 windowObserver = nil
             }
+            if let observer = windowResizeObserver {
+                NotificationCenter.default.removeObserver(observer)
+                windowResizeObserver = nil
+            }
         }
     }
     
@@ -176,7 +187,7 @@ class MPVVideoNSView: NSView {
         }
         
         // Also observe window resize
-        NotificationCenter.default.addObserver(
+        windowResizeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResizeNotification,
             object: window,
             queue: .main

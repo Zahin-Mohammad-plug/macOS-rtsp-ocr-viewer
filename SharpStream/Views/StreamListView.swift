@@ -72,6 +72,10 @@ struct StreamListView: View {
             loadStreams()
             loadRecentStreams()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowNewStreamDialog"))) { _ in
+            editingStream = nil
+            showAddStreamSheet = true
+        }
     }
     
     private func loadStreams() {

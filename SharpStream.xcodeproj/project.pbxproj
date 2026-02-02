@@ -9,12 +9,37 @@
 /* Begin PBXBuildFile section */
 		9A2C19772F1F865000B642D5 /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9A2C19762F1F865000B642D5 /* MPVKit */; };
 		9A4659312F1F974A00BC4E04 /* TestPlan.xctestplan in Resources */ = {isa = PBXBuildFile; fileRef = 9A4659302F1F974A00BC4E04 /* TestPlan.xctestplan */; };
+		B2A1E4A13E1110010081A001 /* FocusScorerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081A101 /* FocusScorerTests.swift */; };
+		B2A1E4A13E1110010081A002 /* StreamURLValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081A102 /* StreamURLValidatorTests.swift */; };
+		B2A1E4A13E1110010081B001 /* SharpStreamUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081B101 /* SharpStreamUITests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B2A1E4A13E1110010081A201 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9A38405E2F1F779100EF3DBB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9A3840652F1F779100EF3DBB;
+			remoteInfo = SharpStream;
+		};
+		B2A1E4A13E1110010081B201 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9A38405E2F1F779100EF3DBB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9A3840652F1F779100EF3DBB;
+			remoteInfo = SharpStream;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		9A3840662F1F779100EF3DBB /* SharpStream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SharpStream.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A3D91542F1F7B7A0038B961 /* SharpStream.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = SharpStream.xcodeproj; sourceTree = "<group>"; };
 		9A4659302F1F974A00BC4E04 /* TestPlan.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = TestPlan.xctestplan; sourceTree = "<group>"; };
+		B2A1E4A13E1110010081A101 /* FocusScorerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusScorerTests.swift; sourceTree = "<group>"; };
+		B2A1E4A13E1110010081A102 /* StreamURLValidatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamURLValidatorTests.swift; sourceTree = "<group>"; };
+		B2A1E4A13E1110010081A103 /* SharpStreamTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SharpStreamTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B2A1E4A13E1110010081B101 /* SharpStreamUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharpStreamUITests.swift; sourceTree = "<group>"; };
+		B2A1E4A13E1110010081B102 /* SharpStreamUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SharpStreamUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -42,6 +67,8 @@
 			children = (
 				9A4659302F1F974A00BC4E04 /* TestPlan.xctestplan */,
 				9A3840682F1F779100EF3DBB /* SharpStream */,
+				B2A1E4A13E1110010081A104 /* SharpStreamTests */,
+				B2A1E4A13E1110010081B103 /* SharpStreamUITests */,
 				9A3840672F1F779100EF3DBB /* Products */,
 			);
 			sourceTree = "<group>";
@@ -50,6 +77,8 @@
 			isa = PBXGroup;
 			children = (
 				9A3840662F1F779100EF3DBB /* SharpStream.app */,
+				B2A1E4A13E1110010081A103 /* SharpStreamTests.xctest */,
+				B2A1E4A13E1110010081B102 /* SharpStreamUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -57,6 +86,23 @@
 		9A3D91562F1F7B7A0038B961 /* Products */ = {
 			isa = PBXGroup;
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B2A1E4A13E1110010081A104 /* SharpStreamTests */ = {
+			isa = PBXGroup;
+			children = (
+				B2A1E4A13E1110010081A101 /* FocusScorerTests.swift */,
+				B2A1E4A13E1110010081A102 /* StreamURLValidatorTests.swift */,
+			);
+			path = SharpStreamTests;
+			sourceTree = "<group>";
+		};
+		B2A1E4A13E1110010081B103 /* SharpStreamUITests */ = {
+			isa = PBXGroup;
+			children = (
+				B2A1E4A13E1110010081B101 /* SharpStreamUITests.swift */,
+			);
+			path = SharpStreamUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -84,6 +130,40 @@
 			productName = SharpStream;
 			productReference = 9A3840662F1F779100EF3DBB /* SharpStream.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B2A1E4A13E1110010081A105 /* SharpStreamTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B2A1E4A13E1110010081A301 /* Build configuration list for PBXNativeTarget "SharpStreamTests" */;
+			buildPhases = (
+				B2A1E4A13E1110010081A106 /* Sources */,
+				B2A1E4A13E1110010081A107 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B2A1E4A13E1110010081A202 /* PBXTargetDependency */,
+			);
+			name = SharpStreamTests;
+			productName = SharpStreamTests;
+			productReference = B2A1E4A13E1110010081A103 /* SharpStreamTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		B2A1E4A13E1110010081B105 /* SharpStreamUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B2A1E4A13E1110010081B301 /* Build configuration list for PBXNativeTarget "SharpStreamUITests" */;
+			buildPhases = (
+				B2A1E4A13E1110010081B106 /* Sources */,
+				B2A1E4A13E1110010081B107 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B2A1E4A13E1110010081B202 /* PBXTargetDependency */,
+			);
+			name = SharpStreamUITests;
+			productName = SharpStreamUITests;
+			productReference = B2A1E4A13E1110010081B102 /* SharpStreamUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -125,6 +205,8 @@
 			projectRoot = "";
 			targets = (
 				9A3840652F1F779100EF3DBB /* SharpStream */,
+				B2A1E4A13E1110010081A105 /* SharpStreamTests */,
+				B2A1E4A13E1110010081B105 /* SharpStreamUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -148,7 +230,54 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B2A1E4A13E1110010081A106 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B2A1E4A13E1110010081A001 /* FocusScorerTests.swift in Sources */,
+				B2A1E4A13E1110010081A002 /* StreamURLValidatorTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B2A1E4A13E1110010081B106 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B2A1E4A13E1110010081B001 /* SharpStreamUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B2A1E4A13E1110010081A107 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B2A1E4A13E1110010081B107 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B2A1E4A13E1110010081A202 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9A3840652F1F779100EF3DBB /* SharpStream */;
+			targetProxy = B2A1E4A13E1110010081A201 /* PBXContainerItemProxy */;
+		};
+		B2A1E4A13E1110010081B202 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9A3840652F1F779100EF3DBB /* SharpStream */;
+			targetProxy = B2A1E4A13E1110010081B201 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		9A3840742F1F779200EF3DBB /* Debug */ = {
@@ -377,6 +506,77 @@
 			};
 			name = Release;
 		};
+		B2A1E4A13E1110010081A302 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sharpstream.SharpStreamTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SharpStream.app/Contents/MacOS/SharpStream";
+			};
+			name = Debug;
+		};
+		B2A1E4A13E1110010081A303 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sharpstream.SharpStreamTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SharpStream.app/Contents/MacOS/SharpStream";
+			};
+			name = Release;
+		};
+		B2A1E4A13E1110010081B302 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sharpstream.SharpStreamUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = SharpStream;
+			};
+			name = Debug;
+		};
+		B2A1E4A13E1110010081B303 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sharpstream.SharpStreamUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = SharpStream;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -394,6 +594,24 @@
 			buildConfigurations = (
 				9A3840772F1F779200EF3DBB /* Debug */,
 				9A3840782F1F779200EF3DBB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B2A1E4A13E1110010081A301 /* Build configuration list for PBXNativeTarget "SharpStreamTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B2A1E4A13E1110010081A302 /* Debug */,
+				B2A1E4A13E1110010081A303 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B2A1E4A13E1110010081B301 /* Build configuration list for PBXNativeTarget "SharpStreamUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B2A1E4A13E1110010081B302 /* Debug */,
+				B2A1E4A13E1110010081B303 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

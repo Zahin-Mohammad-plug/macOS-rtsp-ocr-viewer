@@ -16,6 +16,13 @@ import os.log
 import Libmpv
 #endif
 
+enum MPVPlayerEvent {
+    case fileLoaded
+    case endFile
+    case shutdown
+    case loadFailed(String)
+}
+
 /// Swift wrapper around libmpv C API for video playback and frame extraction
 /// 
 /// This class provides a clean, type-safe interface to MPVKit/libmpv for:
@@ -37,10 +44,12 @@ class MPVPlayerWrapper: ObservableObject {
     private var windowIDSet: Bool = false // Track if wid was set
     private var isInitialized: Bool = false // Track if mpv_initialize was called
     private var pendingStreamURL: String? // Store stream URL if loadStream called before init
+    private let isHeadless: Bool
+    var eventHandler: ((MPVPlayerEvent) -> Void)?
     
     private let frameExtractionQueue = DispatchQueue(label: "com.sharpstream.frame-extraction", qos: .userInitiated)
     private var frameExtractionTimer: Timer?
-    private var frameExtractionInterval: TimeInterval = 1.0 / 30.0 // Default: 30 FPS
+    private var frameExtractionInterval: TimeInterval = 1.0 // Screenshot extraction is expensive; keep this low-frequency
     
     @Published var isPlaying: Bool = false
     @Published var currentTime: TimeInterval = 0
@@ -57,7 +66,8 @@ class MPVPlayerWrapper: ObservableObject {
     
     private static let logger = Logger(subsystem: "com.sharpstream", category: "mpv")
     
-    init() {
+    init(headless: Bool = false) {
+        self.isHeadless = headless
         Self.logger.info("🚀 MPVPlayerWrapper.init() called")
         print("🚀 MPVPlayerWrapper.init() called")
         print("🔍 Checking MPVKit availability...")
@@ -100,13 +110,19 @@ class MPVPlayerWrapper: ObservableObject {
         // Set options BEFORE initialization
         print("⚙️ Setting MPV options...")
         mpv_set_option_string(handle, "hwdec", "auto-safe")
-        // Use gpu-next with moltenvk for Metal/Vulkan rendering (matches demo app)
-        mpv_set_option_string(handle, "vo", "gpu-next")
-        mpv_set_option_string(handle, "gpu-api", "vulkan")
-        mpv_set_option_string(handle, "gpu-context", "moltenvk")
-        // Audio configuration - explicit CoreAudio output for macOS
-        mpv_set_option_string(handle, "audio", "yes")
-        mpv_set_option_string(handle, "ao", "coreaudio")
+        if isHeadless {
+            // Probe mode for validation/testing where no rendering view exists.
+            mpv_set_option_string(handle, "vo", "null")
+            mpv_set_option_string(handle, "audio", "no")
+        } else {
+            // Use gpu-next with moltenvk for Metal/Vulkan rendering (matches demo app)
+            mpv_set_option_string(handle, "vo", "gpu-next")
+            mpv_set_option_string(handle, "gpu-api", "vulkan")
+            mpv_set_option_string(handle, "gpu-context", "moltenvk")
+            // Audio configuration - explicit CoreAudio output for macOS
+            mpv_set_option_string(handle, "audio", "yes")
+            mpv_set_option_string(handle, "ao", "coreaudio")
+        }
         mpv_set_option_string(handle, "network-timeout", "10")
         mpv_set_option_string(handle, "rtsp-transport", "tcp")
         mpv_set_option_string(handle, "video", "yes")
@@ -142,6 +158,9 @@ class MPVPlayerWrapper: ObservableObject {
             print("❌ ERROR: MPV initialization failed")
             print("   Status code: \(status)")
             print("   Error: \(error)")
+            DispatchQueue.main.async { [weak self] in
+                self?.eventHandler?(.loadFailed("MPV initialization failed: \(error)"))
+            }
             mpv_destroy(handle)
             mpvHandle = nil
             return
@@ -162,6 +181,21 @@ class MPVPlayerWrapper: ObservableObject {
             pendingStreamURL = nil // Clear pending to avoid reload
             loadStream(url: pendingURL)
         }
+        #endif
+    }
+
+    /// Headless mode can initialize without a rendering surface.
+    /// Returns false when initialization is unavailable/failed.
+    @discardableResult
+    func initializeForHeadlessIfNeeded() -> Bool {
+        #if canImport(Libmpv)
+        guard isHeadless else { return isInitialized }
+        if !isInitialized {
+            completeMPVInitialization()
+        }
+        return isInitialized
+        #else
+        return false
         #endif
     }
     
@@ -252,6 +286,9 @@ class MPVPlayerWrapper: ObservableObject {
             #if canImport(Libmpv)
             let eventId = event.pointee.event_id
             if eventId == MPV_EVENT_SHUTDOWN {
+                DispatchQueue.main.async { [weak self] in
+                    self?.eventHandler?(.shutdown)
+                }
                 break
             }
             
@@ -269,6 +306,9 @@ class MPVPlayerWrapper: ObservableObject {
         
         switch eventId {
         case MPV_EVENT_FILE_LOADED:
+            DispatchQueue.main.async { [weak self] in
+                self?.eventHandler?(.fileLoaded)
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.updateDuration()
                 // Start frame extraction once stream is loaded
@@ -289,6 +329,9 @@ class MPVPlayerWrapper: ObservableObject {
             }
             
         case MPV_EVENT_END_FILE:
+            DispatchQueue.main.async { [weak self] in
+                self?.eventHandler?(.endFile)
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.isPlaying = false
             }
@@ -384,6 +427,9 @@ class MPVPlayerWrapper: ObservableObject {
             mpvHandle = nil
         }
         #endif
+        isInitialized = false
+        windowIDSet = false
+        pendingStreamURL = nil
     }
     
     // MARK: - Stream Loading
@@ -429,6 +475,7 @@ class MPVPlayerWrapper: ObservableObject {
             print("   Original URL: \(url)")
 
             DispatchQueue.main.async {
+                self.eventHandler?(.loadFailed("Failed to load stream: \(error)"))
                 NotificationCenter.default.post(
                     name: NSNotification.Name("MPVError"),
                     object: nil,
@@ -707,19 +754,18 @@ class MPVPlayerWrapper: ObservableObject {
             return
         }
         
-        // Wait for file to be written (screenshot is async)
-        // Check multiple times with increasing delays
+        // Wait for file to be written (screenshot command is async)
         var attempts = 0
         let maxAttempts = 20 // 2 seconds max wait
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
-            attempts += 1
-            if FileManager.default.fileExists(atPath: screenshotPath.path) || attempts >= maxAttempts {
-                timer.invalidate()
-                if FileManager.default.fileExists(atPath: screenshotPath.path) {
-                    self?.loadScreenshotAsPixelBuffer(from: screenshotPath, timestamp: timestamp, callback: callback)
-                }
+        while attempts < maxAttempts {
+            if FileManager.default.fileExists(atPath: screenshotPath.path) {
+                loadScreenshotAsPixelBuffer(from: screenshotPath, timestamp: timestamp, callback: callback)
+                return
             }
+            Thread.sleep(forTimeInterval: 0.1)
+            attempts += 1
         }
+        try? FileManager.default.removeItem(at: screenshotPath)
         #else
         // Fallback: create empty placeholder
         let timestamp = Date()

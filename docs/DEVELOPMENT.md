@@ -80,6 +80,31 @@ Vision framework wrapper for text recognition. Processes frames asynchronously.
 - Stream connection flow
 - Frame extraction pipeline
 
+### Local QA Stream Setup (Private)
+
+For private RTSP/LAN streams, use local environment variables (never commit real endpoints):
+
+1. Copy `.env.example` to `.env`
+2. Set your stream values:
+   - `SHARPSTREAM_TEST_RTSP_URL=rtsp://<private-host>:554/live`
+   - `SHARPSTREAM_TEST_VIDEO_FILE=/absolute/path/to/test.mp4`
+   - `SHARPSTREAM_TEST_STREAMS=<optional,comma,separated,list>`
+3. Run checks through `scripts/full_check.sh` (it auto-loads `.env` when present)
+
+If no env stream/file is configured, stream-dependent smoke tests are skipped explicitly.
+
+### Full Pre-Release Check
+
+Run the local pre-release validation:
+
+```bash
+scripts/full_check.sh
+```
+
+This runs:
+- Build (`xcodebuild build`)
+- Tests (`xcodebuild test`) including UI smoke checks
+
 ### Manual Testing Checklist
 - [ ] Connect to RTSP stream
 - [ ] Test playback controls

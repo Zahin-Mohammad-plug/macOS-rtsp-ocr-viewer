@@ -46,6 +46,7 @@ struct ExportView: View {
         } label: {
             Image(systemName: "square.and.arrow.down")
         }
+        .accessibilityIdentifier("exportMenuButton")
         .onChange(of: appState.currentOCRResult) { oldValue, newValue in
             currentOCRResult = newValue
         }
@@ -62,6 +63,18 @@ struct ExportView: View {
             if case .jpeg = exportFormat {
                 exportFormat = .jpeg(quality: CGFloat(newValue))
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ExportCurrentFrame"))) { _ in
+            saveFrame()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ExportOCRText"))) { _ in
+            exportOCRText()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ExportFrameWithOCR"))) { _ in
+            exportFrameWithOCR()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CopyToClipboard"))) { _ in
+            copyOCRText()
         }
     }
     

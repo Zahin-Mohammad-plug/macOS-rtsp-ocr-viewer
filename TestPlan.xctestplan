@@ -12,7 +12,22 @@
     "testTimeoutsEnabled" : true
   },
   "testTargets" : [
-
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:SharpStream.xcodeproj",
+        "identifier" : "B2A1E4A13E1110010081A105",
+        "name" : "SharpStreamTests"
+      }
+    },
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:SharpStream.xcodeproj",
+        "identifier" : "B2A1E4A13E1110010081B105",
+        "name" : "SharpStreamUITests"
+      }
+    }
   ],
   "version" : 1
 }

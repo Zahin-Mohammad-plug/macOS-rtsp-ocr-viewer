@@ -76,28 +76,70 @@ struct StreamURLValidator {
     }
     
     static func testConnection(to urlString: String, timeout: TimeInterval = 5.0) async -> ConnectionTestResult {
-        // Create a temporary MPVKit player to test connection
-        let testPlayer = MPVPlayerWrapper()
-        defer {
-            testPlayer.cleanup()
+        let validation = validate(urlString)
+        guard validation.isValid else {
+            return .invalidURL
         }
-        
-        // Try to load the stream
+
+        let testPlayer = MPVPlayerWrapper(headless: true)
+        defer { testPlayer.cleanup() }
+
+        guard testPlayer.initializeForHeadlessIfNeeded() else {
+            return .unknownError("Failed to initialize probe player")
+        }
+
+        let eventStream = AsyncStream<MPVPlayerEvent> { continuation in
+            testPlayer.eventHandler = { event in
+                continuation.yield(event)
+            }
+            continuation.onTermination = { _ in
+                testPlayer.eventHandler = nil
+            }
+        }
+
         testPlayer.loadStream(url: urlString)
-        
-        // Wait a bit for connection to establish
-        try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
-        
-        // Check if player has metadata (indicates successful connection)
-        let metadata = testPlayer.getMetadata()
-        
-        if metadata.resolution != nil || metadata.frameRate != nil {
-            return .success
-        } else {
-            // Check if timeout exceeded (this is a simplified check)
-            // In production, you'd want to check connection state more carefully
-            return .unknownError("Unable to connect to stream")
+
+        let timeoutNanos = UInt64(max(1, timeout) * 1_000_000_000)
+        return await withTaskGroup(of: ConnectionTestResult.self) { group in
+            group.addTask {
+                for await event in eventStream {
+                    switch event {
+                    case .fileLoaded:
+                        return .success
+                    case .loadFailed(let message):
+                        return mapProbeError(message)
+                    case .endFile:
+                        return .unknownError("Playback ended before stream became active")
+                    case .shutdown:
+                        return .unknownError("Probe player shut down unexpectedly")
+                    }
+                }
+                return .unknownError("No probe events received")
+            }
+
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutNanos)
+                return .timeout
+            }
+
+            let result = await group.next() ?? .unknownError("Probe returned no result")
+            group.cancelAll()
+            return result
         }
+    }
+
+    private static func mapProbeError(_ message: String) -> ConnectionTestResult {
+        let lower = message.lowercased()
+        if lower.contains("timed out") || lower.contains("timeout") {
+            return .timeout
+        }
+        if lower.contains("refused") || lower.contains("unreachable") || lower.contains("route") {
+            return .connectionRefused
+        }
+        if lower.contains("auth") || lower.contains("permission") || lower.contains("401") || lower.contains("403") {
+            return .authenticationRequired
+        }
+        return .unknownError(message)
     }
 }
 
