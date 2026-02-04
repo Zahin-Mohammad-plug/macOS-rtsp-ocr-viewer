@@ -27,7 +27,12 @@ class FocusScorer: ObservableObject {
         useOpenCV = true // Will fall back to Swift-native if OpenCV not available
     }
     
-    func scoreFrame(_ pixelBuffer: CVPixelBuffer, timestamp: Date, sequenceNumber: Int) -> FrameScore {
+    func scoreFrame(
+        _ pixelBuffer: CVPixelBuffer,
+        timestamp: Date,
+        playbackTime: TimeInterval? = nil,
+        sequenceNumber: Int
+    ) -> FrameScore {
         let score: Double
         
         if useOpenCV, let openCVScorer = openCVScorer {
@@ -47,6 +52,7 @@ class FocusScorer: ObservableObject {
         let frameScore = FrameScore(
             timestamp: timestamp,
             score: score,
+            playbackTime: playbackTime,
             pixelBuffer: pixelBuffer,
             sequenceNumber: sequenceNumber
         )
@@ -70,6 +76,41 @@ class FocusScorer: ObservableObject {
     func recentFrameCount(in timeRange: TimeInterval, now: Date = Date()) -> Int {
         let cutoffTime = now.addingTimeInterval(-timeRange)
         return scoreHistory.filter { $0.timestamp >= cutoffTime && $0.timestamp <= now }.count
+    }
+
+    func frame(sequenceNumber: Int) -> FrameScore? {
+        scoreHistory.first(where: { $0.sequenceNumber == sequenceNumber })
+    }
+
+    func selectBestFrame(
+        in timeRange: TimeInterval,
+        now: Date = Date(),
+        currentPlaybackTime: TimeInterval?,
+        seekMode: SeekMode
+    ) -> SmartPauseSelection? {
+        guard let bestFrame = findBestFrame(in: timeRange, now: now) else {
+            return nil
+        }
+
+        let frameAge = max(0, now.timeIntervalSince(bestFrame.timestamp))
+        let playbackTarget: TimeInterval?
+
+        if let framePlaybackTime = bestFrame.playbackTime {
+            playbackTarget = framePlaybackTime
+        } else if let currentPlaybackTime {
+            playbackTarget = max(0, currentPlaybackTime - frameAge)
+        } else {
+            playbackTarget = nil
+        }
+
+        return SmartPauseSelection(
+            sequenceNumber: bestFrame.sequenceNumber,
+            score: bestFrame.score,
+            frameTimestamp: bestFrame.timestamp,
+            playbackTime: playbackTarget,
+            frameAge: frameAge,
+            seekMode: seekMode
+        )
     }
     
     func getCurrentScore() -> Double? {

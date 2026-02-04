@@ -118,10 +118,48 @@ This writes logs and `.xcresult` bundles under:
 - `DerivedData/bug-pass/<timestamp>/unit-tests.xcresult`
 - `DerivedData/bug-pass/<timestamp>/ui-smoke.xcresult`
 
+### Smart Pause Validation (test.MOV)
+
+Use the moving-document sample to validate sharp-frame selection quality:
+
+1. Set env vars in a local `.env` file (gitignored). Copy from `.env.example` and fill in your paths:
+   - `SHARPSTREAM_TEST_VIDEO_FILE` — path to a local test video (e.g. `test.MOV` in project root)
+   - `SHARPSTREAM_TEST_RTSP_URL` — optional RTSP URL for live-stream tests
+   - `SHARPSTREAM_DEBUG_LOG_PATH` - Optional Log path
+2. Run reliability matrix (default: 10 iterations per MP4/live scenario):
+   - `SMART_PAUSE_REPEATS=10 scripts/smart_pause_test_matrix.sh`
+3. Verify Smart Pause feedback and diagnostics:
+   - control status shows selected frame age/score
+   - timeline marker appears for file/timeline mode
+   - live badge appears for live-buffered streams
+   - failed iterations include `smartPauseDiagnosticsLabel` payload in trace attachments
+
+### Smart Pause Failure Triage
+
+Use `failureReason` from Smart Pause diagnostics to quickly isolate likely causes:
+
+| failureReason | Likely subsystem |
+| --- | --- |
+| `noRecentFrames` | frame extraction cadence, frame callback timing, lookback window |
+| `staleSelection` | stale history windowing or delayed selection trigger |
+| `seekRejected` | player seek path (`seek(to:)` / `seek(offset:)`) |
+| `seekDisabled` | seek mode classification (`StreamManager.classifySeekMode`) |
+| `ocrFrameMissing` | frame retention / focus scorer history for selected sequence |
+
+### Smart Pause Performance Budget
+
+- Baseline sampling: 4 FPS (`0.25s` frame extraction interval)
+- Degrade to 2 FPS when CPU > 8% for 3 consecutive samples or memory pressure warning
+- Degrade to 1 FPS when CPU > 12% for 3 consecutive samples or memory pressure critical
+- Recover one tier after 10 stable samples at CPU < 6% and normal memory pressure
+- Target envelope: keep Smart Pause scoring overhead under an effective `<8%` app CPU budget in normal playback
+
 ### Manual Testing Checklist
 - [ ] Connect to RTSP stream
 - [ ] Test playback controls
-- [ ] Test smart pause and OCR
+- [ ] Test Smart Pause repeatedly on `test.MOV` and verify selected frame feedback (status + marker)
+- [ ] Test Smart Pause on RTSP and verify live buffer feedback path
+- [ ] Test smart pause + OCR gating (`autoOCROnSmartPause` on/off)
 - [ ] Test frame export
 - [ ] Test buffer recovery
 - [ ] Test reconnection after stream drop

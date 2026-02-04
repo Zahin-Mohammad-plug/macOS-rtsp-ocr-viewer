@@ -62,6 +62,11 @@ struct StatsPanel: View {
             if let scoringFPS = stats.focusScoringFPS {
                 StatRow(label: "Focus Scoring FPS", value: String(format: "%.1f", scoringFPS))
             }
+
+            StatRow(
+                label: "Smart Pause Sampling",
+                value: appState.streamManager.smartPauseSamplingTier.displayName
+            )
             
             StatRow(label: "Memory Pressure", value: stats.memoryPressure.rawValue)
         }

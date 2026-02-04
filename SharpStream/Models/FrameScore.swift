@@ -12,13 +12,22 @@ struct FrameScore: Identifiable {
     let id: UUID
     let timestamp: Date
     let score: Double
+    let playbackTime: TimeInterval?
     var pixelBuffer: CVPixelBuffer?
     let sequenceNumber: Int
     
-    init(id: UUID = UUID(), timestamp: Date, score: Double, pixelBuffer: CVPixelBuffer? = nil, sequenceNumber: Int) {
+    init(
+        id: UUID = UUID(),
+        timestamp: Date,
+        score: Double,
+        playbackTime: TimeInterval? = nil,
+        pixelBuffer: CVPixelBuffer? = nil,
+        sequenceNumber: Int
+    ) {
         self.id = id
         self.timestamp = timestamp
         self.score = score
+        self.playbackTime = playbackTime
         self.pixelBuffer = pixelBuffer
         self.sequenceNumber = sequenceNumber
     }

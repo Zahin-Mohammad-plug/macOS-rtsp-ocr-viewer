@@ -39,7 +39,7 @@ class MPVPlayerWrapper: ObservableObject {
     
     private var mpvHandle: OpaquePointer?
     private var renderContext: OpaquePointer?
-    private var frameCallback: ((CVPixelBuffer, Date) -> Void)?
+    private var frameCallback: ((CVPixelBuffer, Date, TimeInterval?) -> Void)?
     private var windowView: Any? // Store view/layer for later wid setup
     private var windowIDSet: Bool = false // Track if wid was set
     private var isInitialized: Bool = false // Track if mpv_initialize was called
@@ -49,7 +49,9 @@ class MPVPlayerWrapper: ObservableObject {
     
     private let frameExtractionQueue = DispatchQueue(label: "com.sharpstream.frame-extraction", qos: .userInitiated)
     private var frameExtractionTimer: Timer?
-    private var frameExtractionInterval: TimeInterval = 1.0 // Screenshot extraction is expensive; keep this low-frequency
+    private var frameExtractionInterval: TimeInterval = 0.25 // 4 FPS baseline for Smart Pause selection quality
+    private var frameExtractionInFlight = false
+    private var frameExtractionSuspendedForSnapshot = false
     
     @Published var isPlaying: Bool = false
     @Published var currentTime: TimeInterval = 0
@@ -681,13 +683,23 @@ class MPVPlayerWrapper: ObservableObject {
     
     // MARK: - Frame Extraction
     
-    /// Set callback for frame extraction
-    /// - Parameter callback: Called with CVPixelBuffer and timestamp for each extracted frame
-    /// Note: Frame extraction runs at 1 FPS to avoid excessive screenshot commands
-    func setFrameCallback(_ callback: @escaping (CVPixelBuffer, Date) -> Void) {
+    /// Set callback for frame extraction.
+    /// - Parameter callback: Called with frame, wall-clock timestamp, and playback time (if available).
+    func setFrameCallback(_ callback: @escaping (CVPixelBuffer, Date, TimeInterval?) -> Void) {
         frameCallback = callback
         // Don't start extraction immediately - wait for stream to be ready
         // startFrameExtraction() will be called when stream is loaded
+    }
+
+    func setFrameExtractionInterval(_ seconds: TimeInterval) {
+        let clampedInterval = max(0.1, seconds)
+        guard abs(clampedInterval - frameExtractionInterval) > 0.001 else { return }
+        frameExtractionInterval = clampedInterval
+
+        // Re-arm timer so interval changes take effect immediately while connected.
+        if frameExtractionTimer != nil {
+            startFrameExtraction()
+        }
     }
     
     func startFrameExtraction() {
@@ -700,50 +712,53 @@ class MPVPlayerWrapper: ObservableObject {
             self?.extractCurrentFrame()
         }
     }
+
+    func suspendFrameExtractionForSnapshot() {
+        frameExtractionSuspendedForSnapshot = frameExtractionTimer != nil
+        stopFrameExtraction()
+    }
+
+    func resumeFrameExtractionAfterSnapshot() {
+        defer { frameExtractionSuspendedForSnapshot = false }
+        guard frameExtractionSuspendedForSnapshot,
+              frameCallback != nil,
+              mpvHandle != nil else { return }
+        startFrameExtraction()
+    }
     
     private func stopFrameExtraction() {
         frameExtractionTimer?.invalidate()
         frameExtractionTimer = nil
+        frameExtractionInFlight = false
     }
     
     private func extractCurrentFrame() {
         guard mpvHandle != nil,
-              let callback = frameCallback,
-              isPlaying else { return } // Only extract when playing
+              let callback = frameCallback else { return }
+
+        guard !frameExtractionInFlight else { return }
+        frameExtractionInFlight = true
         
         // Get current frame using screenshot API (simpler approach)
         // Note: This is a placeholder - actual implementation would use render context
         frameExtractionQueue.async { [weak self] in
+            defer {
+                DispatchQueue.main.async { [weak self] in
+                    self?.frameExtractionInFlight = false
+                }
+            }
             // For now, we'll use a workaround with screenshot command
             // In production, use mpv_render_context_render() for better performance
             self?.extractFrameViaScreenshot(callback: callback)
         }
     }
     
-    private func extractFrameViaScreenshot(callback: @escaping (CVPixelBuffer, Date) -> Void) {
+    private func extractFrameViaScreenshot(callback: @escaping (CVPixelBuffer, Date, TimeInterval?) -> Void) {
         #if canImport(Libmpv)
         guard let handle = mpvHandle else { return }
-        
-        // Check if stream is actually loaded and playing
-        var pauseFlag: Int32 = 1
-        let pauseFormat = MPV_FORMAT_FLAG
-        mpv_get_property(handle, "pause", pauseFormat, &pauseFlag)
-        
-        // Don't extract if paused or not ready
-        if pauseFlag != 0 {
-            return
-        }
-        
-        // Get current playback time for timestamp
-        var time: Double = 0
-        let format = MPV_FORMAT_DOUBLE
-        mpv_get_property(handle, "playback-time", format, &time)
-        
-        // Don't extract if time is 0 (stream not started)
-        if time <= 0 {
-            return
-        }
-        
+
+        // Prefer a real playback timestamp, but still capture if timing is unavailable.
+        let playbackTime = currentPlaybackTimeForFrameExtraction()
         let timestamp = Date()
         
         // Use screenshot command to extract frame to temporary file
@@ -755,8 +770,10 @@ class MPVPlayerWrapper: ObservableObject {
         let result = mpv_command_string(handle, command)
         
         guard result == 0 else {
-            // Error -4 typically means command queue is full or command failed
-            // Silently fail - don't spam console with errors
+            // Fall back to rendering snapshot when mpv screenshot command is unavailable.
+            if let fallbackBuffer = snapshotWindowViewPixelBuffer() {
+                callback(fallbackBuffer, timestamp, playbackTime)
+            }
             return
         }
         
@@ -765,13 +782,21 @@ class MPVPlayerWrapper: ObservableObject {
         let maxAttempts = 20 // 2 seconds max wait
         while attempts < maxAttempts {
             if FileManager.default.fileExists(atPath: screenshotPath.path) {
-                loadScreenshotAsPixelBuffer(from: screenshotPath, timestamp: timestamp, callback: callback)
+                loadScreenshotAsPixelBuffer(
+                    from: screenshotPath,
+                    timestamp: timestamp,
+                    playbackTime: playbackTime,
+                    callback: callback
+                )
                 return
             }
             Thread.sleep(forTimeInterval: 0.1)
             attempts += 1
         }
         try? FileManager.default.removeItem(at: screenshotPath)
+        if let fallbackBuffer = snapshotWindowViewPixelBuffer() {
+            callback(fallbackBuffer, timestamp, playbackTime)
+        }
         #else
         // Fallback: create empty placeholder
         let timestamp = Date()
@@ -785,12 +810,44 @@ class MPVPlayerWrapper: ObservableObject {
         )
         
         if status == kCVReturnSuccess, let buffer = pixelBuffer {
-            callback(buffer, timestamp)
+            callback(buffer, timestamp, nil)
         }
         #endif
     }
+
+    private func currentPlaybackTimeForFrameExtraction() -> TimeInterval? {
+        #if canImport(Libmpv)
+        guard let handle = mpvHandle else { return nil }
+
+        var time: Double = 0
+        let format = MPV_FORMAT_DOUBLE
+
+        var result = mpv_get_property(handle, "playback-time", format, &time)
+        if result != 0 {
+            result = mpv_get_property(handle, "time-pos", format, &time)
+        }
+
+        if result != 0 && duration > 0 {
+            var position: Double = 0
+            let posResult = mpv_get_property(handle, "percent-pos", format, &position)
+            if posResult == 0 && position >= 0 {
+                return (position / 100.0) * duration
+            }
+        }
+
+        guard result == 0, time >= 0 else { return nil }
+        return time
+        #else
+        return nil
+        #endif
+    }
     
-    private func loadScreenshotAsPixelBuffer(from url: URL, timestamp: Date, callback: @escaping (CVPixelBuffer, Date) -> Void) {
+    private func loadScreenshotAsPixelBuffer(
+        from url: URL,
+        timestamp: Date,
+        playbackTime: TimeInterval?,
+        callback: @escaping (CVPixelBuffer, Date, TimeInterval?) -> Void
+    ) {
         guard FileManager.default.fileExists(atPath: url.path) else {
             print("⚠️ Screenshot file not found: \(url.path)")
             return
@@ -851,7 +908,7 @@ class MPVPlayerWrapper: ObservableObject {
         try? FileManager.default.removeItem(at: url)
         
         // Call callback with extracted frame
-        callback(buffer, timestamp)
+        callback(buffer, timestamp, playbackTime)
     }
     
     /// Get current frame as CVPixelBuffer (synchronous)
@@ -867,11 +924,11 @@ class MPVPlayerWrapper: ObservableObject {
         let command = "screenshot-to-file \"\(screenshotPath.path)\" png"
         let result = mpv_command_string(handle, command)
         
-        guard result == 0 else { return nil }
+        guard result == 0 else { return snapshotWindowViewPixelBuffer() }
         
         // Wait for file (with timeout)
         var attempts = 0
-        while !FileManager.default.fileExists(atPath: screenshotPath.path) && attempts < 10 {
+        while !FileManager.default.fileExists(atPath: screenshotPath.path) && attempts < 40 {
             Thread.sleep(forTimeInterval: 0.05)
             attempts += 1
         }
@@ -880,7 +937,7 @@ class MPVPlayerWrapper: ObservableObject {
               let image = NSImage(contentsOf: screenshotPath),
               let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             try? FileManager.default.removeItem(at: screenshotPath)
-            return nil
+            return snapshotWindowViewPixelBuffer()
         }
         
         // Convert to CVPixelBuffer
@@ -923,6 +980,79 @@ class MPVPlayerWrapper: ObservableObject {
         #else
         return nil
         #endif
+    }
+
+    private func snapshotWindowViewPixelBuffer() -> CVPixelBuffer? {
+        let cgImage: CGImage?
+
+        if let layer = windowView as? CALayer {
+            let bounds = layer.bounds.integral
+            guard bounds.width > 1, bounds.height > 1 else { return nil }
+
+            let scale = layer.contentsScale > 0 ? layer.contentsScale : 1.0
+            let width = max(1, Int(bounds.width * scale))
+            let height = max(1, Int(bounds.height * scale))
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let bitmapInfo = CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+
+            guard let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: bitmapInfo
+            ) else {
+                return nil
+            }
+
+            context.scaleBy(x: scale, y: scale)
+            layer.render(in: context)
+            cgImage = context.makeImage()
+        } else if let view = windowView as? NSView {
+            let bounds = view.bounds
+            guard bounds.width > 1, bounds.height > 1 else { return nil }
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+            view.cacheDisplay(in: bounds, to: rep)
+            cgImage = rep.cgImage
+        } else {
+            cgImage = nil
+        }
+
+        guard let cgImage else { return nil }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue!,
+             kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!] as CFDictionary,
+            &pixelBuffer
+        )
+
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
+            return nil
+        }
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+
+        let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer),
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        )
+        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return buffer
     }
     
     // MARK: - Metadata Extraction
@@ -1086,6 +1216,8 @@ class MPVPlayerWrapper: ObservableObject {
         #endif
     }
 }
+
+extension MPVPlayerWrapper: SmartPausePlayer {}
 
 // MARK: - MPV C API Constants
 

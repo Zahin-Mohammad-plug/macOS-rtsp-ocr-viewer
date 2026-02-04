@@ -18,6 +18,32 @@ enum ConnectionLifecycleState: Equatable {
     case failed(String)
 }
 
+enum SmartPauseSamplingTier: String, Equatable {
+    case normal
+    case reduced
+    case minimal
+
+    var fps: Double {
+        switch self {
+        case .normal: return 4.0
+        case .reduced: return 2.0
+        case .minimal: return 1.0
+        }
+    }
+
+    var extractionInterval: TimeInterval {
+        1.0 / fps
+    }
+
+    var displayName: String {
+        switch self {
+        case .normal: return "Normal (4 FPS)"
+        case .reduced: return "Reduced (2 FPS)"
+        case .minimal: return "Minimal (1 FPS)"
+        }
+    }
+}
+
 class StreamManager: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected
     @Published var streamStats = StreamStats()
@@ -25,6 +51,7 @@ class StreamManager: ObservableObject {
     @Published var seekMode: SeekMode = .disabled
     @Published var connectionLifecycle: ConnectionLifecycleState = .idle
     @Published var reconnectAttempt: Int = 0
+    @Published var smartPauseSamplingTier: SmartPauseSamplingTier = .normal
     
     var database: StreamDatabase?
     weak var bufferManager: BufferManager?
@@ -37,15 +64,30 @@ class StreamManager: ObservableObject {
     private let maxReconnectAttempts = 10
     private var reconnectDelay: TimeInterval = 1.0
     private var userInitiatedDisconnect = false
+    private var lastConnectRequestAt: Date = .distantPast
+    private var cpuOver8Count = 0
+    private var cpuOver12Count = 0
+    private var recoveryStableCount = 0
     
     // MPVKit player wrapper
     var player: MPVPlayerWrapper?
     
     init() {
-        // Initialize stream manager
+        var initialStats = streamStats
+        initialStats.smartPauseSamplingFPS = smartPauseSamplingTier.fps
+        streamStats = initialStats
     }
     
     func connect(to stream: SavedStream) {
+        let now = Date()
+        if currentStream?.url == stream.url,
+           (connectionState == .connecting || connectionState == .reconnecting),
+           now.timeIntervalSince(lastConnectRequestAt) < 1.0 {
+            print("⏭️ Ignoring duplicate connect request while connection is already in progress: \(stream.url)")
+            return
+        }
+
+        lastConnectRequestAt = now
         performConnect(to: stream, triggeredByReconnect: false)
     }
 
@@ -63,6 +105,8 @@ class StreamManager: ObservableObject {
             reconnectAttempts = 0
             reconnectAttempt = 0
             reconnectDelay = 1.0
+            resetSmartPauseQoSState()
+            smartPauseSamplingTier = .normal
         }
         seekMode = Self.classifySeekMode(protocolType: stream.protocolType, duration: player?.duration)
         
@@ -95,7 +139,7 @@ class StreamManager: ObservableObject {
         }
         
         // Set up frame callback for buffering and processing
-        newPlayer.setFrameCallback { [weak self, weak newPlayer] pixelBuffer, timestamp in
+        newPlayer.setFrameCallback { [weak self, weak newPlayer] pixelBuffer, timestamp, playbackTime in
             guard let self = self,
                   let eventPlayer = newPlayer,
                   self.player === eventPlayer,
@@ -110,7 +154,12 @@ class StreamManager: ObservableObject {
                 let sequenceNumber = await bufferManager.getCurrentSequenceNumber()
                 
                 // Score frame for focus detection
-                let frameScore = focusScorer.scoreFrame(pixelBuffer, timestamp: timestamp, sequenceNumber: sequenceNumber)
+                let frameScore = focusScorer.scoreFrame(
+                    pixelBuffer,
+                    timestamp: timestamp,
+                    playbackTime: playbackTime,
+                    sequenceNumber: sequenceNumber
+                )
                 
                 // Update stats with current focus score
                 await MainActor.run {
@@ -124,6 +173,7 @@ class StreamManager: ObservableObject {
         // Load stream
         print("📺 Loading stream: \(stream.url)")
         connectionLifecycle = .loadCommandIssued
+        applySmartPauseSampling(force: true)
         newPlayer.loadStream(url: stream.url)
         print("✅ loadStream() called, waiting for connection...")
 
@@ -179,6 +229,9 @@ class StreamManager: ObservableObject {
         reconnectDelay = 1.0
         seekMode = .disabled
         connectionLifecycle = .idle
+        resetSmartPauseQoSState()
+        smartPauseSamplingTier = .normal
+        applySmartPauseSampling(force: true)
     }
     
     func startReconnect(reason: String) {
@@ -214,6 +267,63 @@ class StreamManager: ObservableObject {
         streamStats.bitrate = bitrate
         streamStats.resolution = resolution
         streamStats.frameRate = frameRate
+    }
+
+    func updateSmartPauseQoS(cpuUsage: Double?, memoryPressure: MemoryPressureLevel) {
+        guard connectionState == .connected || connectionState == .connecting || connectionState == .reconnecting else {
+            resetSmartPauseQoSState()
+            if smartPauseSamplingTier != .normal {
+                setSamplingTierIfNeeded(.normal, reason: "no active playback")
+            }
+            return
+        }
+
+        if memoryPressure == .critical {
+            setSamplingTierIfNeeded(.minimal, reason: "memory pressure critical")
+            return
+        }
+
+        if let cpuUsage {
+            if cpuUsage > 12 {
+                cpuOver12Count += 1
+                cpuOver8Count += 1
+            } else if cpuUsage > 8 {
+                cpuOver12Count = 0
+                cpuOver8Count += 1
+            } else {
+                cpuOver12Count = 0
+                cpuOver8Count = 0
+            }
+        } else {
+            cpuOver12Count = 0
+            cpuOver8Count = 0
+        }
+
+        if memoryPressure == .warning, smartPauseSamplingTier == .normal {
+            setSamplingTierIfNeeded(.reduced, reason: "memory pressure warning")
+        } else if cpuOver12Count >= 3 {
+            setSamplingTierIfNeeded(.minimal, reason: "cpu > 12% for 3 samples")
+        } else if cpuOver8Count >= 3 {
+            setSamplingTierIfNeeded(.reduced, reason: "cpu > 8% for 3 samples")
+        }
+
+        if memoryPressure == .normal, let cpuUsage, cpuUsage < 6 {
+            recoveryStableCount += 1
+        } else {
+            recoveryStableCount = 0
+        }
+
+        if recoveryStableCount >= 10 {
+            switch smartPauseSamplingTier {
+            case .minimal:
+                setSamplingTierIfNeeded(.reduced, reason: "stable recovery window met")
+            case .reduced:
+                setSamplingTierIfNeeded(.normal, reason: "stable recovery window met")
+            case .normal:
+                break
+            }
+            recoveryStableCount = 0
+        }
     }
 
     private func handlePlayerEvent(_ event: MPVPlayerEvent) {
@@ -320,18 +430,41 @@ class StreamManager: ObservableObject {
 
     static func classifySeekMode(protocolType: StreamProtocol, duration: TimeInterval?) -> SeekMode {
         let knownDuration = (duration ?? 0) > 0
-        if knownDuration {
-            return .absolute
-        }
 
         switch protocolType {
-        case .rtsp, .srt, .udp, .hls, .http, .https:
+        case .rtsp, .srt, .udp:
             return .liveBuffered
+        case .hls, .http, .https:
+            return knownDuration ? .absolute : .liveBuffered
         case .file:
-            return .disabled
+            return knownDuration ? .absolute : .disabled
         case .unknown:
             return .disabled
         }
+    }
+
+    private func setSamplingTierIfNeeded(_ newTier: SmartPauseSamplingTier, reason: String) {
+        guard newTier != smartPauseSamplingTier else { return }
+        smartPauseSamplingTier = newTier
+        recoveryStableCount = 0
+        applySmartPauseSampling(force: true)
+        print("🎛️ Smart Pause sampling tier -> \(newTier.displayName) (\(reason))")
+    }
+
+    private func applySmartPauseSampling(force: Bool = false) {
+        player?.setFrameExtractionInterval(smartPauseSamplingTier.extractionInterval)
+
+        if force || streamStats.smartPauseSamplingFPS != smartPauseSamplingTier.fps {
+            var stats = streamStats
+            stats.smartPauseSamplingFPS = smartPauseSamplingTier.fps
+            streamStats = stats
+        }
+    }
+
+    private func resetSmartPauseQoSState() {
+        cpuOver8Count = 0
+        cpuOver12Count = 0
+        recoveryStableCount = 0
     }
 }
 

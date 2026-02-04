@@ -79,6 +79,7 @@ class AppState: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var connectionState: ConnectionState = .disconnected
     @Published var currentOCRResult: OCRResult?
+    @Published var lastSmartPauseDiagnostics: SmartPauseDiagnostics?
 
     let streamManager = StreamManager()
     let bufferManager = BufferManager()
@@ -88,6 +89,11 @@ class AppState: ObservableObject {
     let streamDatabase = StreamDatabase()
     let performanceMonitor = PerformanceMonitor()
     let keyboardShortcuts = KeyboardShortcuts()
+    lazy var smartPauseCoordinator = SmartPauseCoordinator(
+        focusScorer: focusScorer,
+        bufferManager: bufferManager,
+        ocrEngine: ocrEngine
+    )
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -142,6 +148,10 @@ class AppState: ObservableObject {
         
         await MainActor.run {
             streamManager.streamStats = stats
+            streamManager.updateSmartPauseQoS(
+                cpuUsage: stats.cpuUsage,
+                memoryPressure: stats.memoryPressure
+            )
         }
     }
 }

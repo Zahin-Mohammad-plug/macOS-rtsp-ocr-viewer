@@ -9,7 +9,17 @@ import Foundation
 import os.log
 
 struct DebugLogger {
-    private static let logPath = "/Users/zebo/Documents/GitHub/macOS-rtsp-ocr-viewer/.cursor/debug.log"
+    /// Log file path: set SHARPSTREAM_DEBUG_LOG_PATH in environment, or defaults to ~/Library/Application Support/SharpStream/debug.log
+    private static var logPath: String {
+        if let env = ProcessInfo.processInfo.environment["SHARPSTREAM_DEBUG_LOG_PATH"], !env.isEmpty {
+            return (env as NSString).expandingTildeInPath
+        }
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = appSupport.appendingPathComponent("SharpStream", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("debug.log").path
+    }
     private static let osLogger = Logger(subsystem: "com.sharpstream", category: "debug")
     private static let queue = DispatchQueue(label: "debug.logger", qos: .utility)
     

@@ -29,6 +29,8 @@ struct ControlsView: View {
     @State private var lastSeekCompletionTime: TimeInterval = 0 // Track when seek actually completed
     @State private var controlStatusMessage: String?
     @State private var messageClearWorkItem: DispatchWorkItem?
+    @State private var smartPauseSelection: SmartPauseSelection?
+    @State private var selectionClearWorkItem: DispatchWorkItem?
     
     private var player: MPVPlayerWrapper? {
         appState.streamManager.player
@@ -41,6 +43,16 @@ struct ControlsView: View {
     private var canScrubTimeline: Bool {
         seekMode.allowsTimelineScrubbing && duration > 0
     }
+
+    private var smartPauseMarkerNormalized: Double? {
+        guard let selection = smartPauseSelection,
+              selection.seekMode == .absolute,
+              duration > 0,
+              let playbackTime = selection.playbackTime else {
+            return nil
+        }
+        return max(0, min(1, playbackTime / duration))
+    }
     
     var body: some View {
         VStack(spacing: 12) {
@@ -52,63 +64,79 @@ struct ControlsView: View {
                     .frame(width: 60, alignment: .leading)
                     .accessibilityIdentifier("currentTimeLabel")
                 
-                Slider(value: $sliderValue, in: 0...max(duration, 1)) {
-                    Text("Timeline")
-                }
-                .accessibilityIdentifier("timelineSlider")
-                .disabled(!canScrubTimeline || seekInProgress)
-                .onChange(of: sliderValue) { oldValue, newValue in
-                    guard canScrubTimeline else { return }
-                    // Only handle user-initiated changes, not programmatic updates
-                    // Also don't handle if a seek is already in progress
-                    if !isUpdatingSliderProgrammatically && !seekInProgress {
-                        // Check if this is a significant change (user dragging, not just timer drift)
-                        let change = abs(newValue - oldValue)
+                ZStack(alignment: .leading) {
+                    Slider(value: $sliderValue, in: 0...max(duration, 1)) {
+                        Text("Timeline")
+                    }
+                    .accessibilityIdentifier("timelineSlider")
+                    .disabled(!canScrubTimeline || seekInProgress)
+                    .onChange(of: sliderValue) { oldValue, newValue in
+                        guard canScrubTimeline else { return }
+                        // Only handle user-initiated changes, not programmatic updates
+                        // Also don't handle if a seek is already in progress
+                        if !isUpdatingSliderProgrammatically && !seekInProgress {
+                            // Check if this is a significant change (user dragging, not just timer drift)
+                            let change = abs(newValue - oldValue)
 
-                        // Require larger change to avoid reacting to playback position drift
-                        // Especially important for RTSP streams with imprecise seeking
-                        if change > 0.5 {
-                            // User is dragging the slider
-                            isDraggingSlider = true
-                            lastUserSliderValue = newValue
+                            // Require larger change to avoid reacting to playback position drift
+                            // Especially important for RTSP streams with imprecise seeking
+                            if change > 0.5 {
+                                // User is dragging the slider
+                                isDraggingSlider = true
+                                lastUserSliderValue = newValue
 
-                            // Cancel any pending seek timer
-                            if let existingTimer = sliderChangeDebounceTimer {
-                                existingTimer.invalidate()
-                                sliderChangeDebounceTimer = nil
-                            }
-
-                            // Debounce the seek - wait for user to stop dragging
-                            let targetTime = newValue
-                            sliderChangeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [targetTime] timer in
-                                // Double-check timer is still valid and we haven't started seeking
-                                guard timer.isValid, !self.seekInProgress, self.isDraggingSlider else {
-                                    self.isDraggingSlider = false
-                                    return
+                                // Cancel any pending seek timer
+                                if let existingTimer = sliderChangeDebounceTimer {
+                                    existingTimer.invalidate()
+                                    sliderChangeDebounceTimer = nil
                                 }
 
-                                let currentSliderValue = self.sliderValue
-                                let timeSinceLastSeek = CACurrentMediaTime() - self.lastSeekCompletionTime
+                                // Debounce the seek - wait for user to stop dragging
+                                let targetTime = newValue
+                                sliderChangeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [targetTime] timer in
+                                    // Double-check timer is still valid and we haven't started seeking
+                                    guard timer.isValid, !self.seekInProgress, self.isDraggingSlider else {
+                                        self.isDraggingSlider = false
+                                        return
+                                    }
 
-                                // Only seek if:
-                                // 1. Slider value is still close to target (user stopped dragging)
-                                // 2. Not in middle of programmatic update
-                                // 3. Change is significant enough to warrant a seek
-                                // 4. Enough time has passed since the last seek (prevent rapid loops)
-                                if abs(currentSliderValue - targetTime) < 0.5 &&
-                                   !self.isUpdatingSliderProgrammatically &&
-                                   abs(currentSliderValue - (self.player?.currentTime ?? 0)) > 0.5 &&
-                                   timeSinceLastSeek > 1.5 {
-                                    print("🎚️ Slider released at: \(String(format: "%.1f", currentSliderValue))s")
-                                    self.seek(to: currentSliderValue)
-                                    self.isDraggingSlider = false
-                                    self.lastUserSliderValue = -1
-                                } else {
-                                    // Conditions not met - don't seek, just clear dragging state
-                                    self.isDraggingSlider = false
+                                    let currentSliderValue = self.sliderValue
+                                    let timeSinceLastSeek = CACurrentMediaTime() - self.lastSeekCompletionTime
+
+                                    // Only seek if:
+                                    // 1. Slider value is still close to target (user stopped dragging)
+                                    // 2. Not in middle of programmatic update
+                                    // 3. Change is significant enough to warrant a seek
+                                    // 4. Enough time has passed since the last seek (prevent rapid loops)
+                                    if abs(currentSliderValue - targetTime) < 0.5 &&
+                                       !self.isUpdatingSliderProgrammatically &&
+                                       abs(currentSliderValue - (self.player?.currentTime ?? 0)) > 0.5 &&
+                                       timeSinceLastSeek > 1.5 {
+                                        print("🎚️ Slider released at: \(String(format: "%.1f", currentSliderValue))s")
+                                        self.seek(to: currentSliderValue)
+                                        self.isDraggingSlider = false
+                                        self.lastUserSliderValue = -1
+                                    } else {
+                                        // Conditions not met - don't seek, just clear dragging state
+                                        self.isDraggingSlider = false
+                                    }
                                 }
                             }
                         }
+                    }
+
+                    if let marker = smartPauseMarkerNormalized {
+                        GeometryReader { geometry in
+                            Rectangle()
+                                .fill(Color.orange)
+                                .frame(width: 2, height: 18)
+                                .position(
+                                    x: max(1, min(geometry.size.width - 1, geometry.size.width * marker)),
+                                    y: geometry.size.height / 2
+                                )
+                        }
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("smartPauseSelectionMarker")
                     }
                 }
                 
@@ -131,6 +159,38 @@ struct ControlsView: View {
                         .lineLimit(2)
                         .multilineTextAlignment(.trailing)
                         .accessibilityIdentifier("controlStatusMessage")
+                }
+            }
+
+            if shouldExposeSmartPauseDiagnostics {
+                HStack {
+                    Spacer()
+                    Text(appState.lastSmartPauseDiagnostics?.jsonString ?? "smart-pause-diagnostics: none")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(4)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("smartPauseDiagnosticsLabel")
+                }
+            }
+
+            if let selection = smartPauseSelection, selection.seekMode == .liveBuffered {
+                HStack {
+                    Spacer()
+                    Text("Smart Pause selected from live buffer")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .accessibilityIdentifier("smartPauseLiveBadge")
+                }
+            }
+
+            if smartPauseMarkerNormalized != nil {
+                HStack {
+                    Spacer()
+                    Text("Smart Pause marker active")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .accessibilityIdentifier("smartPauseMarkerStatus")
                 }
             }
             
@@ -272,6 +332,8 @@ struct ControlsView: View {
             sliderChangeDebounceTimer = nil
             messageClearWorkItem?.cancel()
             messageClearWorkItem = nil
+            selectionClearWorkItem?.cancel()
+            selectionClearWorkItem = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TogglePlayPause"))) { _ in
             togglePlayPause()
@@ -422,52 +484,40 @@ struct ControlsView: View {
     
     private func performSmartPause() {
         Task { @MainActor in
-            // Pause playback
-            player?.pause()
-            
-            // Get lookback window from preferences
-            let lookbackWindow = TimeInterval(lookbackWindow)
-            
-            // Find best frame
-            guard let bestFrame = appState.focusScorer.findBestFrame(in: lookbackWindow) else {
-                showControlMessage("Smart Pause found no recent frames in the lookback window.")
+            guard let player = player else {
+                clearSmartPauseFeedback()
+                showControlMessage("Smart Pause is unavailable because no player is active.")
+                appState.lastSmartPauseDiagnostics = nil
                 return
             }
 
-            let frameAge = Date().timeIntervalSince(bestFrame.timestamp)
-            let maxStaleness = max(lookbackWindow + 1.0, 8.0)
-            guard frameAge >= 0, frameAge <= maxStaleness else {
-                showControlMessage("Best frame is stale; try again while playback is active.")
+            let result = await appState.smartPauseCoordinator.perform(
+                request: SmartPauseRequest(
+                    lookbackSeconds: TimeInterval(lookbackWindow),
+                    seekMode: seekMode,
+                    currentPlaybackTime: player.currentTime,
+                    autoOCREnabled: autoOCROnSmartPause
+                ),
+                player: player
+            )
+
+            appState.lastSmartPauseDiagnostics = result.diagnostics
+
+            if let selection = result.selection {
+                setSmartPauseFeedback(selection)
+            } else {
+                clearSmartPauseFeedback()
+            }
+
+            showControlMessage(result.statusMessage)
+
+            guard result.isSuccess, let ocrPixelBuffer = result.ocrPixelBuffer else {
                 return
             }
 
-            // Best-effort seek behavior based on explicit capability.
-            if let player = player {
-                switch seekMode {
-                case .absolute:
-                    let targetTime = max(0, player.currentTime - frameAge)
-                    if !player.seek(to: targetTime) {
-                        showControlMessage("Smart Pause could not seek to the selected frame.")
-                    }
-                case .liveBuffered:
-                    if !player.seek(offset: -frameAge) {
-                        showControlMessage("Smart Pause could not perform live buffered seek.")
-                    }
-                case .disabled:
-                    showControlMessage("Smart Pause selected a frame, but seek is disabled.")
-                }
-            }
-
-            // Perform OCR only when preference and runtime state both allow it.
-            if autoOCROnSmartPause && appState.ocrEngine.isEnabled {
-                if let pixelBuffer = bestFrame.pixelBuffer {
-                    appState.ocrEngine.recognizeText(in: pixelBuffer) { result in
-                        DispatchQueue.main.async {
-                            appState.currentOCRResult = result
-                        }
-                    }
-                } else {
-                    showControlMessage("Smart Pause found a frame but pixel data is unavailable.")
+            appState.ocrEngine.recognizeText(in: ocrPixelBuffer) { result in
+                DispatchQueue.main.async {
+                    appState.currentOCRResult = result
                 }
             }
         }
@@ -500,6 +550,10 @@ struct ControlsView: View {
         }
     }
 
+    private var shouldExposeSmartPauseDiagnostics: Bool {
+        ProcessInfo.processInfo.environment["SHARPSTREAM_ENABLE_SMART_PAUSE_DIAGNOSTICS"] == "1"
+    }
+
     private func showControlMessage(_ message: String) {
         controlStatusMessage = message
         messageClearWorkItem?.cancel()
@@ -509,5 +563,22 @@ struct ControlsView: View {
         }
         messageClearWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: workItem)
+    }
+
+    private func setSmartPauseFeedback(_ selection: SmartPauseSelection) {
+        smartPauseSelection = selection
+        selectionClearWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem {
+            self.smartPauseSelection = nil
+        }
+        selectionClearWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: workItem)
+    }
+
+    private func clearSmartPauseFeedback() {
+        selectionClearWorkItem?.cancel()
+        selectionClearWorkItem = nil
+        smartPauseSelection = nil
     }
 }

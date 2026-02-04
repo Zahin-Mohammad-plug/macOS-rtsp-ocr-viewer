@@ -87,7 +87,7 @@ struct MainWindow: View {
             return
         }
 
-        let urlString = rawURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlString = normalizePastedStreamInput(rawURLString)
         guard !urlString.isEmpty else {
             return
         }
@@ -99,7 +99,31 @@ struct MainWindow: View {
             let protocolType = StreamProtocol.detect(from: urlString)
             let stream = SavedStream(name: "Quick Stream", url: urlString, protocolType: protocolType)
             appState.streamManager.connect(to: stream)
+        } else if let message = result.errorMessage {
+            if ProcessInfo.processInfo.environment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] == "1" {
+                print("⚠️ Paste stream validation failed: \(message)")
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Invalid Stream Input"
+                alert.informativeText = message
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
         }
+    }
+
+    private func normalizePastedStreamInput(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let expandedPath = (trimmed as NSString).expandingTildeInPath
+        if expandedPath.hasPrefix("/") || expandedPath.hasPrefix("./") || expandedPath.hasPrefix("../") {
+            let standardized = URL(fileURLWithPath: expandedPath).standardizedFileURL
+            return standardized.absoluteString
+        }
+
+        return trimmed
     }
     
     private func checkRecoveryData() {

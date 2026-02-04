@@ -83,8 +83,9 @@ SharpStream is a native macOS application built with SwiftUI that provides RTSP 
 
 **Responsibilities**:
 - Score frames using Laplacian variance algorithm
-- Maintain score history
+- Maintain score history with wall-clock + playback-time metadata
 - Find best frame in lookback window
+- Return deterministic Smart Pause selection metadata (sequence/score/age/playback target)
 - Support multiple algorithms (OpenCV, Swift-native)
 
 **Algorithm Options**:
@@ -140,13 +141,17 @@ Stream URL → StreamManager.connect()
 ```
 User clicks "Smart Pause"
     ↓
-FocusScorer.findBestFrame(lookbackWindow)
+Pause playback
     ↓
-Find frame with highest score in last N seconds
+FocusScorer.selectBestFrame(lookbackWindow, currentPlaybackTime, seekMode)
+    ↓
+Seek to selected frame (absolute target when available, age fallback otherwise)
+    ↓
+Show controls feedback (status + timeline marker or live buffer badge)
     ↓
 If auto-OCR enabled:
     ↓
-OCREngine.recognizeText(bestFrame)
+OCREngine.recognizeText(selectedFrame)
     ↓
 Display OCR result in overlay
 ```
@@ -235,7 +240,11 @@ Save to user-selected location
 
 ## Performance Optimizations
 
-1. **Frame Extraction**: Configurable FPS (default 30, can reduce for OCR)
+1. **Smart Pause Sampling QoS**:
+   - Baseline: 4 FPS
+   - Degrade to 2 FPS when CPU > 8% for 3 consecutive samples or memory pressure warning
+   - Degrade to 1 FPS when CPU > 12% for 3 consecutive samples or memory pressure critical
+   - Recover one tier after 10 stable samples with CPU < 6% and normal memory pressure
 2. **Hardware Acceleration**: MPVKit uses hardware decoding when available
 3. **Lazy Loading**: Disk buffers only loaded when seeking
 4. **Memory Efficiency**: JPEG compression for RAM buffer (optional)

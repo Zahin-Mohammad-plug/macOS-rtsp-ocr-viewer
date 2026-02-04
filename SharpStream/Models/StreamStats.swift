@@ -20,6 +20,7 @@ struct StreamStats: Equatable {
     var cpuUsage: Double? // percentage
     var gpuUsage: Double? // percentage
     var focusScoringFPS: Double? // frames scored per second
+    var smartPauseSamplingFPS: Double // target Smart Pause sampling cadence
     var memoryPressure: MemoryPressureLevel
     
     
@@ -35,6 +36,7 @@ struct StreamStats: Equatable {
          cpuUsage: Double? = nil,
          gpuUsage: Double? = nil,
          focusScoringFPS: Double? = nil,
+         smartPauseSamplingFPS: Double = 4.0,
          memoryPressure: MemoryPressureLevel = .normal) {
         self.connectionStatus = connectionStatus
         self.bitrate = bitrate
@@ -48,6 +50,7 @@ struct StreamStats: Equatable {
         self.cpuUsage = cpuUsage
         self.gpuUsage = gpuUsage
         self.focusScoringFPS = focusScoringFPS
+        self.smartPauseSamplingFPS = smartPauseSamplingFPS
         self.memoryPressure = memoryPressure
     }
 }

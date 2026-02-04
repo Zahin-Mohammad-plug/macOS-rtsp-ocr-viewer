@@ -23,7 +23,8 @@ A native macOS application for viewing RTSP streams with smart frame selection, 
 ### Smart Frame Selection
 - **Focus Scoring**: Laplacian variance algorithm (OpenCV or Swift-native)
 - **Configurable Lookback**: 1-5 second window (default 3 seconds)
-- **Visual Feedback**: Shows which frame was selected
+- **Visual Feedback**: Shows selected-frame status and timeline marker (or live buffer badge)
+- **Adaptive Performance**: 4 FPS baseline with automatic degrade (2 FPS / 1 FPS) under pressure
 
 ### OCR Features
 - **Text Recognition**: Vision framework OCR with selectable text overlay
@@ -51,7 +52,7 @@ A native macOS application for viewing RTSP streams with smart frame selection, 
 
 ## Installation
 
-### Option 1: Direct Download (DMG)
+### Option 1: Direct Download (DMG) - COMING SOON
 1. Download the latest DMG from releases
 2. Drag SharpStream.app to Applications folder
 3. Open the app (may require allowing in System Preferences > Security)
@@ -63,7 +64,7 @@ brew install --cask sharp-stream
 
 ### Option 3: Build from Source
 ```bash
-git clone https://github.com/yourusername/macOS-rtsp-ocr-viewer.git
+git clone https://github.com/zahin-mohammad-plug/macOS-rtsp-ocr-viewer.git
 cd macOS-rtsp-ocr-viewer
 open SharpStream.xcodeproj
 # Build and run in Xcode
@@ -104,7 +105,8 @@ open SharpStream.xcodeproj
 ### Smart Pause
 1. Click "Smart Pause" or press ⌘S
 2. The app finds the sharpest frame in the last 3 seconds (configurable)
-3. If auto-OCR is enabled, text recognition runs automatically
+3. Selected-frame feedback appears in controls (status + marker/live badge)
+4. If auto-OCR is enabled, text recognition runs automatically
 
 ### Keyboard Shortcuts
 - **Space**: Play/Pause
@@ -170,6 +172,11 @@ SharpStream automatically saves buffer state every 30 seconds. If the app crashe
 ### Focus Scoring
 - **OpenCV**: Hardware-accelerated, faster
 - **Swift-Native**: No dependencies, good performance
+- **Smart Pause sampling budget**:
+  - Normal: 4 FPS
+  - Degrade: 2 FPS when CPU > 8% for 3 samples or memory pressure warning
+  - Degrade: 1 FPS when CPU > 12% for 3 samples or memory pressure critical
+  - Recover: one tier after 10 stable samples with CPU < 6% and normal memory pressure
 
 ## Distribution
 

@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum SeekMode: String, Equatable {
+enum SeekMode: String, Equatable, Codable {
     case absolute = "Absolute"
     case liveBuffered = "LiveBuffered"
     case disabled = "Disabled"

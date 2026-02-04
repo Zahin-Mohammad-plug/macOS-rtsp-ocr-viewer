@@ -36,7 +36,14 @@ enum StreamProtocol: String, Codable, CaseIterable {
     case unknown = "unknown"
     
     static func detect(from urlString: String) -> StreamProtocol {
-        guard let url = URL(string: urlString) else { return .unknown }
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .unknown }
+
+        if looksLikeLocalFilePath(trimmed) {
+            return .file
+        }
+
+        guard let url = URL(string: trimmed) else { return .unknown }
         let scheme = url.scheme?.lowercased() ?? ""
         
         switch scheme {
@@ -54,11 +61,24 @@ enum StreamProtocol: String, Codable, CaseIterable {
             return .file
         default:
             // Check if it's HLS by extension or path
-            if urlString.contains(".m3u8") || urlString.contains("hls") {
+            if trimmed.contains(".m3u8") || trimmed.contains("hls") {
                 return .hls
             }
             return .unknown
         }
+    }
+
+    private static func looksLikeLocalFilePath(_ candidate: String) -> Bool {
+        let lower = candidate.lowercased()
+        if lower.hasPrefix("file://") {
+            return true
+        }
+
+        // Support pasted absolute/relative filesystem paths (with or without tilde expansion).
+        return candidate.hasPrefix("/")
+            || candidate.hasPrefix("~")
+            || candidate.hasPrefix("./")
+            || candidate.hasPrefix("../")
     }
     
     var displayName: String {

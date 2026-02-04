@@ -26,7 +26,7 @@ Disconnect from current stream and cleanup resources.
 ---
 
 ```swift
-func startReconnect()
+func startReconnect(reason: String)
 ```
 Start automatic reconnection with exponential backoff.
 
@@ -39,11 +39,19 @@ Update stream statistics metadata.
 
 ---
 
+```swift
+func updateSmartPauseQoS(cpuUsage: Double?, memoryPressure: MemoryPressureLevel)
+```
+Apply adaptive Smart Pause sampling tier based on CPU and memory pressure.
+
+---
+
 #### Properties
 
 - `@Published var connectionState: ConnectionState` - Current connection state
 - `@Published var streamStats: StreamStats` - Stream statistics
 - `@Published var currentStream: SavedStream?` - Currently active stream
+- `@Published var smartPauseSamplingTier: SmartPauseSamplingTier` - Smart Pause sampling tier (Normal/Reduced/Minimal)
 - `var player: MPVPlayerWrapper?` - MPVKit player instance
 
 ---
@@ -101,12 +109,19 @@ Step one frame forward or backward.
 ---
 
 ```swift
-func setFrameCallback(_ callback: @escaping (CVPixelBuffer, Date) -> Void)
+func setFrameCallback(_ callback: @escaping (CVPixelBuffer, Date, TimeInterval?) -> Void)
 ```
 Register callback for frame extraction.
 
 **Parameters:**
-- `callback`: Called with each extracted frame (pixel buffer and timestamp)
+- `callback`: Called with each extracted frame (pixel buffer, wall-clock timestamp, playbackTime)
+
+---
+
+```swift
+func setFrameExtractionInterval(_ seconds: TimeInterval)
+```
+Control runtime frame extraction cadence (used by Smart Pause adaptive QoS).
 
 ---
 
@@ -243,13 +258,14 @@ Evaluates frame sharpness using focus scoring algorithms.
 #### Methods
 
 ```swift
-func scoreFrame(_ pixelBuffer: CVPixelBuffer, timestamp: Date, sequenceNumber: Int) -> FrameScore
+func scoreFrame(_ pixelBuffer: CVPixelBuffer, timestamp: Date, playbackTime: TimeInterval? = nil, sequenceNumber: Int) -> FrameScore
 ```
 Score a frame for sharpness/focus quality.
 
 **Parameters:**
 - `pixelBuffer`: Frame to score
-- `timestamp`: Frame timestamp
+- `timestamp`: Frame wall-clock timestamp
+- `playbackTime`: Playback timeline position for deterministic Smart Pause seek targets
 - `sequenceNumber`: Frame sequence number
 
 **Returns:** FrameScore with score value
@@ -265,6 +281,13 @@ Find frame with highest score in time range.
 - `timeRange`: Lookback window in seconds (e.g., 3.0)
 
 **Returns:** FrameScore with highest score, or nil
+
+---
+
+```swift
+func selectBestFrame(in timeRange: TimeInterval, now: Date = Date(), currentPlaybackTime: TimeInterval?, seekMode: SeekMode) -> SmartPauseSelection?
+```
+Return deterministic Smart Pause selection metadata used for seek + UX feedback.
 
 ---
 
@@ -520,10 +543,15 @@ streamManager.connect(to: stream)
 ### Setting Up Frame Callback
 
 ```swift
-player.setFrameCallback { pixelBuffer, timestamp in
+player.setFrameCallback { pixelBuffer, timestamp, playbackTime in
     Task {
         await bufferManager.addFrame(pixelBuffer, timestamp: timestamp)
-        let score = focusScorer.scoreFrame(pixelBuffer, timestamp: timestamp, sequenceNumber: 0)
+        let score = focusScorer.scoreFrame(
+            pixelBuffer,
+            timestamp: timestamp,
+            playbackTime: playbackTime,
+            sequenceNumber: 0
+        )
     }
 }
 ```
@@ -533,6 +561,18 @@ player.setFrameCallback { pixelBuffer, timestamp in
 ```swift
 if let bestFrame = focusScorer.findBestFrame(in: 3.0) {
     // Use bestFrame.pixelBuffer for OCR or export
+}
+```
+
+### Smart Pause Selection
+
+```swift
+if let selection = focusScorer.selectBestFrame(
+    in: 3.0,
+    currentPlaybackTime: player.currentTime,
+    seekMode: .absolute
+) {
+    _ = player.seek(to: selection.playbackTime ?? 0)
 }
 ```
 

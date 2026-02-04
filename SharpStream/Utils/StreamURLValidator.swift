@@ -9,18 +9,18 @@ import Foundation
 
 struct StreamURLValidator {
     static func validate(_ urlString: String) -> ValidationResult {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+
         // Check if URL is empty
-        guard !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard !trimmed.isEmpty else {
             return .invalid("URL cannot be empty")
         }
-        
-        // Check if it's a valid URL
-        guard let url = URL(string: urlString) else {
-            return .invalid("Invalid URL format")
-        }
-        
+
+        // Parse URL when possible (filesystem paths can be accepted without URL parsing).
+        let url = URL(string: trimmed)
+
         // Check protocol
-        let protocolType = StreamProtocol.detect(from: urlString)
+        let protocolType = StreamProtocol.detect(from: trimmed)
         
         if protocolType == .unknown {
             return .invalid("Unsupported protocol. Supported: RTSP, SRT, UDP, HLS, HTTP, HTTPS, File")
@@ -29,42 +29,42 @@ struct StreamURLValidator {
         // Protocol-specific validation
         switch protocolType {
         case .rtsp:
-            if !urlString.hasPrefix("rtsp://") {
+            if !trimmed.hasPrefix("rtsp://") {
                 return .invalid("RTSP URL must start with 'rtsp://'")
             }
-            if url.host == nil {
+            if url?.host == nil {
                 return .invalid("RTSP URL must include a host address")
             }
             
         case .srt:
-            if !urlString.hasPrefix("srt://") {
+            if !trimmed.hasPrefix("srt://") {
                 return .invalid("SRT URL must start with 'srt://'")
             }
-            if url.host == nil {
+            if url?.host == nil {
                 return .invalid("SRT URL must include a host address")
             }
             
         case .udp:
-            if !urlString.hasPrefix("udp://") {
+            if !trimmed.hasPrefix("udp://") {
                 return .invalid("UDP URL must start with 'udp://'")
             }
-            if url.host == nil {
+            if url?.host == nil {
                 return .invalid("UDP URL must include a host address")
             }
             
         case .hls:
-            if !urlString.contains(".m3u8") && !urlString.hasPrefix("http://") && !urlString.hasPrefix("https://") {
+            if !trimmed.contains(".m3u8") && !trimmed.hasPrefix("http://") && !trimmed.hasPrefix("https://") {
                 return .invalid("HLS URL should be an HTTP/HTTPS URL with .m3u8 extension")
             }
             
         case .http, .https:
-            if url.host == nil {
+            if url?.host == nil {
                 return .invalid("HTTP/HTTPS URL must include a host address")
             }
             
         case .file:
-            let fileURL = URL(fileURLWithPath: urlString.replacingOccurrences(of: "file://", with: ""))
-            if !FileManager.default.fileExists(atPath: fileURL.path) {
+            let filePath = normalizedFilePath(from: trimmed)
+            if !FileManager.default.fileExists(atPath: filePath) {
                 return .invalid("File does not exist at the specified path")
             }
             
@@ -73,6 +73,13 @@ struct StreamURLValidator {
         }
         
         return .valid
+    }
+
+    private static func normalizedFilePath(from input: String) -> String {
+        if input.lowercased().hasPrefix("file://"), let fileURL = URL(string: input), fileURL.isFileURL {
+            return fileURL.path
+        }
+        return (input as NSString).expandingTildeInPath
     }
     
     static func testConnection(to urlString: String, timeout: TimeInterval = 5.0) async -> ConnectionTestResult {

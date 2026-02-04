@@ -11,6 +11,7 @@
 		9A4659312F1F974A00BC4E04 /* TestPlan.xctestplan in Resources */ = {isa = PBXBuildFile; fileRef = 9A4659302F1F974A00BC4E04 /* TestPlan.xctestplan */; };
 		B2A1E4A13E1110010081A001 /* FocusScorerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081A101 /* FocusScorerTests.swift */; };
 		B2A1E4A13E1110010081A002 /* StreamURLValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081A102 /* StreamURLValidatorTests.swift */; };
+		B2A1E4A13E1110010081A003 /* SmartPauseCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081A108 /* SmartPauseCoordinatorTests.swift */; };
 		B2A1E4A13E1110010081B001 /* SharpStreamUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081B101 /* SharpStreamUITests.swift */; };
 /* End PBXBuildFile section */
 
@@ -38,6 +39,7 @@
 		B2A1E4A13E1110010081A101 /* FocusScorerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusScorerTests.swift; sourceTree = "<group>"; };
 		B2A1E4A13E1110010081A102 /* StreamURLValidatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamURLValidatorTests.swift; sourceTree = "<group>"; };
 		B2A1E4A13E1110010081A103 /* SharpStreamTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SharpStreamTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B2A1E4A13E1110010081A108 /* SmartPauseCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartPauseCoordinatorTests.swift; sourceTree = "<group>"; };
 		B2A1E4A13E1110010081B101 /* SharpStreamUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharpStreamUITests.swift; sourceTree = "<group>"; };
 		B2A1E4A13E1110010081B102 /* SharpStreamUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SharpStreamUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -56,6 +58,20 @@
 			buildActionMask = 2147483647;
 			files = (
 				9A2C19772F1F865000B642D5 /* MPVKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B2A1E4A13E1110010081A107 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B2A1E4A13E1110010081B107 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -92,6 +108,7 @@
 			isa = PBXGroup;
 			children = (
 				B2A1E4A13E1110010081A101 /* FocusScorerTests.swift */,
+				B2A1E4A13E1110010081A108 /* SmartPauseCoordinatorTests.swift */,
 				B2A1E4A13E1110010081A102 /* StreamURLValidatorTests.swift */,
 			);
 			path = SharpStreamTests;
@@ -235,6 +252,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B2A1E4A13E1110010081A001 /* FocusScorerTests.swift in Sources */,
+				B2A1E4A13E1110010081A003 /* SmartPauseCoordinatorTests.swift in Sources */,
 				B2A1E4A13E1110010081A002 /* StreamURLValidatorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -248,23 +266,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin PBXFrameworksBuildPhase section */
-		B2A1E4A13E1110010081A107 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		B2A1E4A13E1110010081B107 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXTargetDependency section */
 		B2A1E4A13E1110010081A202 /* PBXTargetDependency */ = {

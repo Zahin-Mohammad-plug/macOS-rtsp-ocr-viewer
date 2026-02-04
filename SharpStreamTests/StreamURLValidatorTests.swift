@@ -44,6 +44,16 @@ final class StreamURLValidatorTests: XCTestCase {
         let result = StreamURLValidator.validate("file://\(tempFile.path)")
         XCTAssertTrue(result.isValid, "Valid file URL should pass validation")
     }
+
+    func testValidAbsoluteFilePath() {
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("test-path.mov")
+        FileManager.default.createFile(atPath: tempFile.path, contents: Data(), attributes: nil)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        let result = StreamURLValidator.validate(tempFile.path)
+        XCTAssertTrue(result.isValid, "Valid absolute file path should pass validation")
+        XCTAssertEqual(StreamProtocol.detect(from: tempFile.path), .file)
+    }
     
     func testEmptyURL() {
         let result = StreamURLValidator.validate("")
@@ -80,7 +90,8 @@ final class StreamURLValidatorTests: XCTestCase {
         XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .file, duration: nil), .disabled)
         XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .file, duration: 120), .absolute)
         XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .rtsp, duration: nil), .liveBuffered)
-        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .rtsp, duration: 120), .absolute)
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .rtsp, duration: 120), .liveBuffered)
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .http, duration: 120), .absolute)
     }
 
     func testReconnectPolicyNetworkOnly() {

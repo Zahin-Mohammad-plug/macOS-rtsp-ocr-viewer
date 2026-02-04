@@ -119,3 +119,4 @@ Temporary Items
 # Local QA stream configuration (never commit private endpoints)
 .env
 .env.local
+test.MOV
