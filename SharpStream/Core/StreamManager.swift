@@ -363,7 +363,14 @@ class StreamManager: ObservableObject {
 
         case .endFile:
             if connectionState == .connecting || connectionState == .reconnecting {
-                handleConnectionFailure("Playback ended before stream fully loaded", allowReconnect: true)
+                if currentStream?.protocolType == .file {
+                    handleConnectionFailure(
+                        "Unable to open file stream. The file may be unsupported or corrupted.",
+                        allowReconnect: false
+                    )
+                } else {
+                    handleConnectionFailure("Playback ended before stream fully loaded", allowReconnect: true)
+                }
             } else if connectionState == .connected {
                 if shouldAutoReconnect() {
                     handleConnectionFailure("Stream ended unexpectedly", allowReconnect: true)

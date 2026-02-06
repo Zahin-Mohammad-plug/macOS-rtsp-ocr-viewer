@@ -13,6 +13,7 @@ struct PreferencesView: View {
     @AppStorage("maxBufferLength") private var maxBufferLength: Int = 30
     @AppStorage("ramBufferSize") private var ramBufferSizeRaw: String = BufferSizePreset.medium.rawValue
     @AppStorage("focusAlgorithm") private var focusAlgorithm: String = "Laplacian"
+    @AppStorage("ocrEnabled") private var ocrEnabled: Bool = false
     @AppStorage("autoOCROnSmartPause") private var autoOCROnSmartPause: Bool = true
     @AppStorage("ocrLanguage") private var ocrLanguage: String = "en-US"
     @AppStorage("defaultExportFormat") private var defaultExportFormat: String = "PNG"
@@ -84,10 +85,10 @@ struct PreferencesView: View {
             // OCR Settings
             Form {
                 Section("OCR Settings") {
-                    Toggle("Enable OCR", isOn: Binding(
-                        get: { appState.ocrEngine.isEnabled },
-                        set: { appState.ocrEngine.isEnabled = $0 }
-                    ))
+                    Toggle("Enable OCR", isOn: $ocrEnabled)
+                        .onChange(of: ocrEnabled) { _, newValue in
+                            appState.ocrEngine.isEnabled = newValue
+                        }
                     
                     Picker("Recognition Level", selection: Binding(
                         get: { appState.ocrEngine.recognitionLevel },
@@ -188,6 +189,8 @@ struct PreferencesView: View {
             if let algo = FocusAlgorithm(rawValue: focusAlgorithm) {
                 appState.focusScorer.setAlgorithm(algo)
             }
+            appState.ocrEngine.isEnabled = ocrEnabled
+            appState.ocrEngine.languages = [ocrLanguage]
         }
     }
 }

@@ -130,10 +130,17 @@ actor BufferManager {
     }
     
     func getFrame(at timestamp: Date, tolerance: TimeInterval = 0.1) -> CVPixelBuffer? {
-        // First check RAM buffer
-        if let frame = ramBuffer.first(where: { abs($0.timestamp.timeIntervalSince(timestamp)) < tolerance }) {
-            // Return the pixel buffer - CVPixelBuffer is thread-safe for reading
-            return frame.pixelBuffer
+        // First check RAM buffer (pick the closest timestamp, not the first match).
+        let closestRAMFrame = ramBuffer
+            .map { frame in
+                (frame: frame, delta: abs(frame.timestamp.timeIntervalSince(timestamp)))
+            }
+            .filter { $0.delta < tolerance }
+            .min { $0.delta < $1.delta }?.frame
+
+        if let closestRAMFrame {
+            // Return the pixel buffer - CVPixelBuffer is thread-safe for reading.
+            return closestRAMFrame.pixelBuffer
         }
         
         // Then check disk buffer

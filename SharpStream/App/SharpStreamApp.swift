@@ -103,6 +103,13 @@ class AppState: ObservableObject {
         streamManager.bufferManager = bufferManager
         streamManager.focusScorer = focusScorer
 
+        // Restore persisted OCR settings so copy/export behavior is available immediately.
+        ocrEngine.isEnabled = UserDefaults.standard.bool(forKey: "ocrEnabled")
+        if let storedLanguage = UserDefaults.standard.string(forKey: "ocrLanguage"),
+           !storedLanguage.isEmpty {
+            ocrEngine.languages = [storedLanguage]
+        }
+
         // Subscribe to StreamManager changes and forward to AppState
         streamManager.$connectionState
             .receive(on: DispatchQueue.main)

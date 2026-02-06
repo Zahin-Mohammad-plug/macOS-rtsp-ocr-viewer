@@ -54,6 +54,7 @@ struct ExportView: View {
             // Initialize from preferences
             jpegQuality = defaultJPEGQuality
             exportFormat = defaultExportFormat == "JPEG" ? .jpeg(quality: CGFloat(defaultJPEGQuality)) : .png
+            currentOCRResult = appState.currentOCRResult
         }
         .onChange(of: defaultExportFormat) { _, newValue in
             exportFormat = newValue == "JPEG" ? .jpeg(quality: CGFloat(defaultJPEGQuality)) : .png
@@ -79,17 +80,72 @@ struct ExportView: View {
     }
     
     private func getCurrentFrame() async -> CVPixelBuffer? {
-        // Get current playback time from player
-        guard let player = appState.streamManager.player else {
-            return nil
+        if let player = appState.streamManager.player {
+            var playerFrame: CVPixelBuffer?
+            await MainActor.run {
+                player.suspendFrameExtractionForSnapshot()
+                defer { player.resumeFrameExtractionAfterSnapshot() }
+                playerFrame = player.getCurrentFrame()
+            }
+
+            if let playerFrame, !isLikelyBlackFrame(playerFrame) {
+                return playerFrame
+            }
         }
-        
-        let currentTime = player.currentTime
-        // Calculate timestamp by going back from now
-        let timestamp = Date().addingTimeInterval(-currentTime)
-        
-        // Get frame from buffer
-        return await appState.bufferManager.getFrame(at: timestamp, tolerance: 0.5)
+
+        if let bufferedFrame = await appState.bufferManager.getFrame(at: Date(), tolerance: 0.4),
+           !isLikelyBlackFrame(bufferedFrame) {
+            return bufferedFrame
+        }
+
+        if let bufferedFrame = await appState.bufferManager.getFrame(at: Date(), tolerance: 1.5),
+           !isLikelyBlackFrame(bufferedFrame) {
+            return bufferedFrame
+        }
+
+        return nil
+    }
+
+    private func isLikelyBlackFrame(_ pixelBuffer: CVPixelBuffer) -> Bool {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            return true
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+
+        let sampleStrideX = max(1, width / 48)
+        let sampleStrideY = max(1, height / 48)
+
+        var sampleCount = 0
+        var brightSamples = 0
+        var totalLuma = 0.0
+
+        for y in stride(from: 0, to: height, by: sampleStrideY) {
+            for x in stride(from: 0, to: width, by: sampleStrideX) {
+                let offset = y * bytesPerRow + x * 4
+                let ptr = baseAddress.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
+
+                // kCVPixelFormatType_32BGRA
+                let b = Double(ptr[0])
+                let g = Double(ptr[1])
+                let r = Double(ptr[2])
+                let luma = 0.0722 * b + 0.7152 * g + 0.2126 * r
+
+                totalLuma += luma
+                if luma > 16 { brightSamples += 1 }
+                sampleCount += 1
+            }
+        }
+
+        guard sampleCount > 0 else { return true }
+        let avgLuma = totalLuma / Double(sampleCount)
+        let brightRatio = Double(brightSamples) / Double(sampleCount)
+        return avgLuma < 10 && brightRatio < 0.03
     }
     
     private func saveFrame() {
@@ -168,13 +224,52 @@ struct ExportView: View {
     }
     
     private func copyOCRText() {
-        guard let ocrResult = currentOCRResult, !ocrResult.text.isEmpty else {
-            showErrorAlert(message: "No OCR text available to copy")
-            return
+        Task { @MainActor in
+            guard appState.ocrEngine.isEnabled else {
+                showErrorAlert(message: "OCR is disabled. Enable OCR in Preferences > OCR to copy text from frame.")
+                return
+            }
+
+            guard let frame = await getCurrentFrame() else {
+                showErrorAlert(message: "No frame available to copy text from.")
+                return
+            }
+
+            let firstPass = await appState.ocrEngine.recognizeText(in: frame)
+            var bestResult = firstPass
+
+            if (bestResult?.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+               appState.streamManager.player?.isPlaying == true {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                if let retryFrame = await getCurrentFrame() {
+                    bestResult = await appState.ocrEngine.recognizeText(in: retryFrame)
+                }
+            }
+
+            guard let ocrResult = bestResult else {
+                showErrorAlert(message: "No text detected in current frame.")
+                return
+            }
+
+            let trimmedText = ocrResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedText.isEmpty else {
+                showErrorAlert(message: "No text detected in current frame.")
+                return
+            }
+
+            let normalizedResult = OCRResult(
+                id: ocrResult.id,
+                text: trimmedText,
+                confidence: ocrResult.confidence,
+                boundingBoxes: ocrResult.boundingBoxes,
+                timestamp: ocrResult.timestamp,
+                frameID: ocrResult.frameID
+            )
+            appState.currentOCRResult = normalizedResult
+            currentOCRResult = normalizedResult
+            appState.exportManager.copyTextToClipboard(trimmedText)
+            showSuccessAlert(message: "OCR text copied to clipboard")
         }
-        
-        appState.exportManager.copyTextToClipboard(ocrResult.text)
-        showSuccessAlert(message: "OCR text copied to clipboard")
     }
     
     private func exportFrameWithOCR() {
