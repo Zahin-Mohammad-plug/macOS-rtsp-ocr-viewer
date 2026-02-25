@@ -30,10 +30,37 @@ final class StreamURLValidatorTests: XCTestCase {
         let result = StreamURLValidator.validate("srt://example.com:9000")
         XCTAssertTrue(result.isValid, "Valid SRT URL should pass validation")
     }
+
+    func testValidSRTListenerURL() {
+        let result = StreamURLValidator.validate("srt://192.168.8.199:20001?mode=listener")
+        XCTAssertTrue(result.isValid, "Valid SRT listener URL should pass validation")
+    }
     
     func testValidHLSURL() {
         let result = StreamURLValidator.validate("https://example.com/stream.m3u8")
         XCTAssertTrue(result.isValid, "Valid HLS URL should pass validation")
+    }
+
+    func testHLSDetectionForHTTPM3U8() {
+        XCTAssertEqual(StreamProtocol.detect(from: "http://192.168.8.10/hls/1_0.m3u8"), .hls)
+        XCTAssertEqual(StreamProtocol.detect(from: "https://example.com/live/index.m3u8"), .hls)
+    }
+
+    func testHTTPDetectionWithoutM3U8() {
+        XCTAssertEqual(StreamProtocol.detect(from: "http://example.com/video.mp4"), .http)
+        XCTAssertEqual(StreamProtocol.detect(from: "https://example.com/api/status"), .https)
+    }
+
+    func testStreamURLRedactionDropsCredentialsAndQuery() {
+        let redacted = StreamURLRedactor.redacted("srt://user:secret@192.168.1.10:9000?passphrase=abc&mode=caller")
+        XCTAssertEqual(redacted, "srt://192.168.1.10:9000")
+    }
+
+    func testWaitingForInboundCallerMessage() {
+        XCTAssertEqual(
+            ConnectionTestResult.waitingForInboundCaller.errorMessage,
+            "Listener is ready. Waiting for inbound caller to connect."
+        )
     }
     
     func testValidFileURL() {
@@ -91,6 +118,8 @@ final class StreamURLValidatorTests: XCTestCase {
         XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .file, duration: 120), .absolute)
         XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .rtsp, duration: nil), .liveBuffered)
         XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .rtsp, duration: 120), .liveBuffered)
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .hls, duration: nil), .liveBuffered)
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .hls, duration: 120), .absolute)
         XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .http, duration: 120), .absolute)
     }
 

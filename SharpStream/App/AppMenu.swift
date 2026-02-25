@@ -129,6 +129,13 @@ struct AppMenu: Commands {
             .keyboardShortcut("s", modifiers: [.command, .control])
             
             Divider()
+
+            Button("Show Statistics") {
+                showStatisticsWindow()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .shift])
+
+            Divider()
             
             Button("Enter Fullscreen") {
                 enterFullscreen()
@@ -271,6 +278,10 @@ struct AppMenu: Commands {
     private func toggleSidebar() {
         NotificationCenter.default.post(name: NSNotification.Name("ToggleSidebar"), object: nil)
     }
+
+    private func showStatisticsWindow() {
+        NotificationCenter.default.post(name: .showStatisticsWindowRequested, object: nil)
+    }
     
     private func enterFullscreen() {
         NSApplication.shared.keyWindow?.toggleFullScreen(nil)
@@ -318,4 +329,5 @@ extension Notification.Name {
     static let copyOCRTextNow = Notification.Name("CopyOCRTextNow")
     static let copyFrameNow = Notification.Name("CopyFrameNow")
     static let quickSaveFrame = Notification.Name("QuickSaveFrame")
+    static let showStatisticsWindowRequested = Notification.Name("ShowStatisticsWindowRequested")
 }

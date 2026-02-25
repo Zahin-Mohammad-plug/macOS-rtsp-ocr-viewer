@@ -61,6 +61,7 @@ class StreamManager: ObservableObject {
     private var reconnectTimer: Timer?
     private var connectionTimeoutTimer: Timer?
     private var metadataTimer: Timer?
+    private var transportMetricsSampler = TransportMetricsSampler()
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 10
     private var reconnectDelay: TimeInterval = 1.0
@@ -114,7 +115,7 @@ class StreamManager: ObservableObject {
         if currentStream?.url == stream.url,
            (connectionState == .connecting || connectionState == .reconnecting),
            now.timeIntervalSince(lastConnectRequestAt) < 1.0 {
-            print("⏭️ Ignoring duplicate connect request while connection is already in progress: \(stream.url)")
+            print("⏭️ Ignoring duplicate connect request while connection is already in progress: \(StreamURLRedactor.redacted(stream.url))")
             return
         }
 
@@ -123,9 +124,10 @@ class StreamManager: ObservableObject {
     }
 
     private func performConnect(to stream: SavedStream, triggeredByReconnect: Bool) {
+        let redactedURL = StreamURLRedactor.redacted(stream.url)
         print("🔌 StreamManager.connect called")
         print("   Stream name: \(stream.name)")
-        print("   Stream URL: \(stream.url)")
+        print("   Stream URL: \(redactedURL)")
         print("   Protocol: \(stream.protocolType.rawValue)")
         
         userInitiatedDisconnect = false
@@ -133,12 +135,15 @@ class StreamManager: ObservableObject {
         currentStream = stream
         connectionState = triggeredByReconnect ? .reconnecting : .connecting
         streamStats.connectionStatus = triggeredByReconnect ? .reconnecting : .connecting
+        streamStats.streamHealth = triggeredByReconnect ? .critical : .degraded
+        streamStats.streamHealthReason = triggeredByReconnect ? "Reconnecting" : "Connecting"
         if !triggeredByReconnect {
             reconnectAttempts = 0
             reconnectAttempt = 0
             reconnectDelay = 1.0
             resetSmartPauseQoSState()
             smartPauseSamplingTier = .normal
+            transportMetricsSampler.reset()
         }
         resetLiveDVRState()
         seekMode = Self.classifySeekMode(protocolType: stream.protocolType, duration: player?.duration)
@@ -206,7 +211,7 @@ class StreamManager: ObservableObject {
         }
         
         // Load stream
-        print("📺 Loading stream: \(stream.url)")
+        print("📺 Loading stream: \(redactedURL)")
         connectionLifecycle = .loadCommandIssued
         applySmartPauseSampling(force: true)
         newPlayer.loadStream(url: stream.url)
@@ -214,31 +219,27 @@ class StreamManager: ObservableObject {
 
         // Fail fast if player never loads the stream.
         connectionTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 12.0, repeats: false) { [weak self] _ in
-            guard let self = self,
-                  self.connectionState == .connecting || self.connectionState == .reconnecting else { return }
-            self.handleConnectionFailure("Connection timeout", allowReconnect: true)
+            Task { @MainActor [weak self] in
+                guard let self = self,
+                      self.connectionState == .connecting || self.connectionState == .reconnecting else { return }
+                self.handleConnectionFailure("Connection timeout", allowReconnect: true)
+            }
         }
     }
     
     private func updateMetadataFromPlayer() {
         guard let player = player else { return }
-        
-        let metadata = player.getMetadata()
-        updateStats(bitrate: metadata.bitrate, resolution: metadata.resolution, frameRate: metadata.frameRate)
-        seekMode = Self.classifySeekMode(protocolType: currentStream?.protocolType ?? .unknown, duration: player.duration)
-        applyLiveBufferSettingsIfNeeded(for: currentStream, player: player)
+
+        sampleTransportMetrics(from: player)
         
         // Update metadata periodically
         metadataTimer?.invalidate()
-        metadataTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+        metadataTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
             guard let self = self, let player = self.player else {
                 timer.invalidate()
                 return
             }
-            let metadata = player.getMetadata()
-            self.updateStats(bitrate: metadata.bitrate, resolution: metadata.resolution, frameRate: metadata.frameRate)
-            self.seekMode = Self.classifySeekMode(protocolType: self.currentStream?.protocolType ?? .unknown, duration: player.duration)
-            self.applyLiveBufferSettingsIfNeeded(for: self.currentStream, player: player)
+            self.sampleTransportMetrics(from: player)
         }
     }
     
@@ -273,6 +274,17 @@ class StreamManager: ObservableObject {
         pendingLiveResume = nil
         lastConnectWasReconnect = false
         lastAppliedLiveBufferSettings = nil
+        transportMetricsSampler.reset()
+        streamStats.rxRateBps = nil
+        streamStats.bufferLevelSeconds = nil
+        streamStats.jitterProxyMs = nil
+        streamStats.packetLossProxyPct = nil
+        streamStats.rttMs = nil
+        streamStats.packetLossPct = nil
+        streamStats.streamHealth = .critical
+        streamStats.streamHealthReason = "Disconnected"
+        streamStats.codecName = nil
+        streamStats.keyframeIntervalSeconds = nil
     }
     
     func startReconnect(reason: String) {
@@ -285,9 +297,12 @@ class StreamManager: ObservableObject {
         }
         
         reconnectAttempts += 1
+        transportMetricsSampler.markReconnectEvent()
         reconnectAttempt = reconnectAttempts
         connectionState = .reconnecting
         streamStats.connectionStatus = .reconnecting
+        streamStats.streamHealth = .critical
+        streamStats.streamHealthReason = "Reconnecting"
         connectionLifecycle = .reconnectScheduled(
             attempt: reconnectAttempts,
             delay: reconnectDelay,
@@ -304,10 +319,11 @@ class StreamManager: ObservableObject {
         }
     }
     
-    func updateStats(bitrate: Int?, resolution: CGSize?, frameRate: Double?) {
+    func updateStats(bitrate: Int?, resolution: CGSize?, frameRate: Double?, codecName: String?) {
         streamStats.bitrate = bitrate
         streamStats.resolution = resolution
         streamStats.frameRate = frameRate
+        streamStats.codecName = codecName
     }
 
     func updateSmartPauseQoS(cpuUsage: Double?, memoryPressure: MemoryPressureLevel) {
@@ -378,6 +394,8 @@ class StreamManager: ObservableObject {
             connectionTimeoutTimer = nil
             connectionState = .connected
             streamStats.connectionStatus = .connected
+            streamStats.streamHealth = .good
+            streamStats.streamHealthReason = "Connected"
             reconnectAttempts = 0
             reconnectAttempt = 0
             reconnectDelay = 1.0
@@ -442,6 +460,7 @@ class StreamManager: ObservableObject {
     }
 
     private func handleConnectionFailure(_ message: String, allowReconnect: Bool) {
+        transportMetricsSampler.markFailureEvent()
         connectionTimeoutTimer?.invalidate()
         connectionTimeoutTimer = nil
         metadataTimer?.invalidate()
@@ -459,7 +478,53 @@ class StreamManager: ObservableObject {
 
         connectionState = .error(message)
         streamStats.connectionStatus = .error(message)
+        streamStats.streamHealth = .critical
+        streamStats.streamHealthReason = message
         seekMode = .disabled
+    }
+
+    private func sampleTransportMetrics(from player: MPVPlayerWrapper) {
+        let snapshot = player.getTransportMetricsSnapshot()
+        updateStats(
+            bitrate: snapshot.bitrate,
+            resolution: snapshot.resolution,
+            frameRate: snapshot.frameRate,
+            codecName: snapshot.codecName
+        )
+        seekMode = Self.classifySeekMode(protocolType: currentStream?.protocolType ?? .unknown, duration: player.duration)
+        applyLiveBufferSettingsIfNeeded(for: currentStream, player: player)
+
+        let bufferLevelSeconds = snapshot.cacheDurationSeconds ?? snapshot.seekableWindowSeconds
+        let sampled = transportMetricsSampler.ingest(
+            isConnected: connectionState == .connected,
+            isConnecting: connectionState == .connecting,
+            isReconnecting: connectionState == .reconnecting,
+            hasError: {
+                if case .error = connectionState { return true }
+                return false
+            }(),
+            errorMessage: {
+                if case .error(let message) = connectionState { return message }
+                return nil
+            }(),
+            isPlaying: player.isPlaying,
+            lagSeconds: liveDVRState.lagSeconds,
+            rxRateBps: snapshot.rawInputRateBps,
+            totalBytesRead: snapshot.totalBytesRead,
+            bufferLevelSeconds: bufferLevelSeconds,
+            frameType: snapshot.frameType
+        )
+
+        streamStats.rxRateBps = sampled.rxRateBps
+        streamStats.bufferLevelSeconds = sampled.bufferLevelSeconds
+        streamStats.jitterProxyMs = sampled.jitterProxyMs
+        streamStats.packetLossProxyPct = sampled.packetLossProxyPct
+        streamStats.streamHealth = sampled.streamHealth
+        streamStats.streamHealthReason = sampled.streamHealthReason
+        streamStats.keyframeIntervalSeconds = sampled.keyframeIntervalSeconds
+        // Reserved for exact SRT metrics in a future phase.
+        streamStats.rttMs = nil
+        streamStats.packetLossPct = nil
     }
 
     private func shouldAutoReconnect() -> Bool {
@@ -553,13 +618,11 @@ class StreamManager: ObservableObject {
         guard mode == .liveBuffered else { return }
 
         let maxWindowSeconds = Self.maxBufferWindowSecondsFromDefaults()
-        let backBufferBytes = Self.estimateBackBufferBytes(
+        let settings = Self.resolveLiveBufferSettings(
             maxWindowSeconds: maxWindowSeconds,
-            bitrate: streamStats.bitrate
-        )
-        let settings = MPVPlayerWrapper.LiveBufferSettings(
-            maxWindowSeconds: maxWindowSeconds,
-            backBufferBytes: backBufferBytes
+            bitrate: streamStats.bitrate,
+            previousSettings: lastAppliedLiveBufferSettings,
+            force: force
         )
 
         if !force, settings == lastAppliedLiveBufferSettings {
@@ -576,6 +639,31 @@ class StreamManager: ObservableObject {
         let minutes = UserDefaults.standard.integer(forKey: "maxBufferLength")
         let resolvedMinutes = minutes > 0 ? minutes : 30
         return TimeInterval(resolvedMinutes * 60)
+    }
+
+    static func resolveLiveBufferSettings(
+        maxWindowSeconds: TimeInterval,
+        bitrate: Int?,
+        previousSettings: MPVPlayerWrapper.LiveBufferSettings?,
+        force: Bool
+    ) -> MPVPlayerWrapper.LiveBufferSettings {
+        let resolvedBackBufferBytes: Int64?
+        if !force,
+           let previousSettings,
+           previousSettings.maxWindowSeconds == maxWindowSeconds {
+            // Keep back-buffer stable for the session; bitrate jitter should not reconfigure playback.
+            resolvedBackBufferBytes = previousSettings.backBufferBytes
+        } else {
+            resolvedBackBufferBytes = estimateBackBufferBytes(
+                maxWindowSeconds: maxWindowSeconds,
+                bitrate: bitrate
+            )
+        }
+
+        return MPVPlayerWrapper.LiveBufferSettings(
+            maxWindowSeconds: maxWindowSeconds,
+            backBufferBytes: resolvedBackBufferBytes
+        )
     }
 
     private static func estimateBackBufferBytes(

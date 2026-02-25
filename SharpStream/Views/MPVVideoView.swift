@@ -36,6 +36,10 @@ struct MPVVideoView: NSViewRepresentable {
 class MPVVideoNSView: NSView {
     var player: MPVPlayerWrapper? {
         didSet {
+            if oldValue !== player {
+                boundPlayerIdentifier = nil
+                boundWindow = nil
+            }
             if player != nil {
                 DispatchQueue.main.async { [weak self] in
                     self?.setupRendering()
@@ -45,6 +49,8 @@ class MPVVideoNSView: NSView {
     }
     
     private var windowObserver: NSObjectProtocol?
+    private var boundPlayerIdentifier: ObjectIdentifier?
+    private weak var boundWindow: NSWindow?
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -82,10 +88,15 @@ class MPVVideoNSView: NSView {
         guard let player = player else {
             return
         }
-        guard window != nil else {
+        guard let window = window else {
             return
         }
         guard bounds.width > 1, bounds.height > 1 else {
+            return
+        }
+
+        let currentPlayerIdentifier = ObjectIdentifier(player)
+        if boundPlayerIdentifier == currentPlayerIdentifier, boundWindow === window {
             return
         }
         
@@ -102,14 +113,21 @@ class MPVVideoNSView: NSView {
             // Fallback to NSView for Cocoa rendering
             player.setWindowID(self)
         }
+        boundPlayerIdentifier = currentPlayerIdentifier
+        boundWindow = window
         #endif
     }
     
     override func layout() {
         super.layout()
         layer?.frame = bounds
-        _ = updateMetalLayerSize(force: true)
-        setupRendering()
+        let drawableReady = updateMetalLayerSize(force: false)
+        if !drawableReady {
+            _ = updateMetalLayerSize(force: true)
+        }
+        if boundPlayerIdentifier == nil {
+            setupRendering()
+        }
     }
     
     @discardableResult
@@ -141,6 +159,10 @@ class MPVVideoNSView: NSView {
         super.viewDidMoveToWindow()
         
         if let window = window {
+            if boundWindow !== window {
+                boundPlayerIdentifier = nil
+                boundWindow = nil
+            }
             // Update scale for current screen
             if let metalLayer = layer as? CAMetalLayer {
                 metalLayer.contentsScale = window.screen?.backingScaleFactor ?? 1.0
@@ -159,6 +181,8 @@ class MPVVideoNSView: NSView {
                 NotificationCenter.default.removeObserver(observer)
                 windowObserver = nil
             }
+            boundPlayerIdentifier = nil
+            boundWindow = nil
         }
     }
 
@@ -168,6 +192,7 @@ class MPVVideoNSView: NSView {
             metalLayer.contentsScale = window?.screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1.0
         }
         _ = updateMetalLayerSize(force: true)
+        boundPlayerIdentifier = nil
         setupRendering()
     }
     

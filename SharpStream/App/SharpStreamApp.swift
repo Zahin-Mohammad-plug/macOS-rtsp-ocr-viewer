@@ -65,6 +65,12 @@ struct SharpStreamApp: App {
                 .keyboardShortcut("n")
             }
         }
+
+        Window("Statistics", id: "statistics") {
+            StatisticsWindowView()
+                .environmentObject(appState)
+        }
+        .defaultSize(width: 420, height: 680)
         
         Settings {
             PreferencesView()

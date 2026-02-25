@@ -35,7 +35,7 @@ enum StreamProtocol: String, Codable, CaseIterable {
     case file = "file"
     case unknown = "unknown"
     
-    static func detect(from urlString: String) -> StreamProtocol {
+    nonisolated static func detect(from urlString: String) -> StreamProtocol {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .unknown }
 
@@ -45,6 +45,8 @@ enum StreamProtocol: String, Codable, CaseIterable {
 
         guard let url = URL(string: trimmed) else { return .unknown }
         let scheme = url.scheme?.lowercased() ?? ""
+        let lowerTrimmed = trimmed.lowercased()
+        let looksLikeHLS = lowerTrimmed.contains(".m3u8") || lowerTrimmed.contains("hls")
         
         switch scheme {
         case "rtsp":
@@ -54,21 +56,21 @@ enum StreamProtocol: String, Codable, CaseIterable {
         case "udp":
             return .udp
         case "http":
-            return .http
+            return looksLikeHLS ? .hls : .http
         case "https":
-            return .https
+            return looksLikeHLS ? .hls : .https
         case "file":
             return .file
         default:
             // Check if it's HLS by extension or path
-            if trimmed.contains(".m3u8") || trimmed.contains("hls") {
+            if looksLikeHLS {
                 return .hls
             }
             return .unknown
         }
     }
 
-    private static func looksLikeLocalFilePath(_ candidate: String) -> Bool {
+    private nonisolated static func looksLikeLocalFilePath(_ candidate: String) -> Bool {
         let lower = candidate.lowercased()
         if lower.hasPrefix("file://") {
             return true

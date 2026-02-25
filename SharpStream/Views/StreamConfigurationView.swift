@@ -43,7 +43,7 @@ struct StreamConfigurationView: View {
                 
                 if let result = connectionTestResult {
                     Text(result.errorMessage)
-                        .foregroundColor(result == ConnectionTestResult.success ? .green : .red)
+                        .foregroundColor(connectionResultColor(result))
                         .font(.caption)
                 }
             }
@@ -109,5 +109,16 @@ struct StreamConfigurationView: View {
         )
         
         onSave(savedStream)
+    }
+
+    private func connectionResultColor(_ result: ConnectionTestResult) -> Color {
+        switch result {
+        case .success:
+            return .green
+        case .waitingForInboundCaller:
+            return .orange
+        default:
+            return .red
+        }
     }
 }

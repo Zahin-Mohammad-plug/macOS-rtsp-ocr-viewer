@@ -142,12 +142,14 @@ struct ControlsView: View {
                 if isLiveMode {
                     HStack(spacing: 6) {
                         Text(formatClockTime(liveScrubStartDate))
+                            .lineLimit(1)
                         Text("•")
                             .foregroundColor(.secondary)
                         Text(formatClockTime(liveScrubCurrentDate))
+                            .lineLimit(1)
                     }
                     .font(.system(.caption, design: .monospaced))
-                    .frame(width: 170, alignment: .leading)
+                    .frame(width: 220, alignment: .leading)
                     .accessibilityIdentifier("liveDvrStartLabel")
                 } else {
                     Text(formatTime(currentPlaybackDisplayTime))
@@ -264,7 +266,8 @@ struct ControlsView: View {
 
                 Text(isLiveMode ? formatClockTime(liveScrubLiveEdgeDate) : formatTime(duration))
                     .font(.system(.body, design: .monospaced))
-                    .frame(width: 80, alignment: .trailing)
+                    .lineLimit(1)
+                    .frame(width: 110, alignment: .trailing)
                     .accessibilityIdentifier(isLiveMode ? "liveEdgeLabel" : "durationTimeLabel")
             }
 
@@ -370,7 +373,7 @@ struct ControlsView: View {
                     jumpToLive()
                 }
                 .accessibilityIdentifier("jumpToLiveButton")
-                .disabled(!isLiveMode || liveDVRState.isAtLiveEdge || seekInProgress)
+                .disabled(!isLiveMode || seekInProgress || (liveDVRState.isAtLiveEdge && isPlaying))
                 
                 Spacer()
                 
@@ -432,7 +435,6 @@ struct ControlsView: View {
                 ExportView()
             }
         }
-        .accessibilityIdentifier("controlsContainer")
         .accessibilityElement(children: .contain)
         .onAppear {
             // Initial sync with player state

@@ -52,6 +52,8 @@ class MPVPlayerWrapper: ObservableObject {
     private var frameExtractionInterval: TimeInterval = 0.25 // 4 FPS baseline for Smart Pause selection quality
     private var frameExtractionInFlight = false
     private var frameExtractionSuspendedForSnapshot = false
+    private var lastScreenshotCommandFailureAt: Date?
+    private let screenshotFailureRetryCooldown: TimeInterval = 1.0
     private let eventLoopStateQueue = DispatchQueue(label: "com.sharpstream.mpv-event-loop-state")
     private let eventLoopGroup = DispatchGroup()
     private var eventLoopRunning = false
@@ -499,6 +501,7 @@ class MPVPlayerWrapper: ObservableObject {
     /// If MPV is not initialized yet, stores the URL and loads it after initialization
     func loadStream(url: String) {
         print("🎬 MPVPlayerWrapper.loadStream called")
+        let redactedURL = StreamURLRedactor.redacted(url)
 
         #if canImport(Libmpv)
         guard let handle = mpvHandle else {
@@ -533,14 +536,14 @@ class MPVPlayerWrapper: ObservableObject {
             print("❌ ERROR: Failed to load stream")
             print("   Error code: \(result)")
             print("   Error message: \(error)")
-            print("   Original URL: \(url)")
+            print("   Stream URL: \(redactedURL)")
 
             DispatchQueue.main.async {
                 self.eventHandler?(.loadFailed("Failed to load stream: \(error)"))
                 NotificationCenter.default.post(
                     name: NSNotification.Name("MPVError"),
                     object: nil,
-                    userInfo: ["message": "Failed to load stream: \(error)", "url": url]
+                    userInfo: ["message": "Failed to load stream: \(error)", "url": redactedURL]
                 )
             }
         } else {
@@ -548,7 +551,7 @@ class MPVPlayerWrapper: ObservableObject {
             print("   Waiting for MPV to start playback...")
         }
         #else
-        print("⚠️ WARNING: Libmpv not available - cannot load stream: \(url)")
+        print("⚠️ WARNING: Libmpv not available - cannot load stream: \(redactedURL)")
         print("   Make sure MPVKit package is properly linked and Libmpv is accessible")
         DispatchQueue.main.async {
             NotificationCenter.default.post(
@@ -848,16 +851,27 @@ class MPVPlayerWrapper: ObservableObject {
         let timestamp = Date()
 
         if let rawFrame = getCurrentFrameViaRawScreenshot(handle: handle), !isLikelyBlackFrame(rawFrame) {
+            lastScreenshotCommandFailureAt = nil
             callback(rawFrame, timestamp, playbackTime)
             return
         }
-        
+
+        if let lastFailure = lastScreenshotCommandFailureAt,
+           timestamp.timeIntervalSince(lastFailure) < screenshotFailureRetryCooldown {
+            if let fallbackBuffer = snapshotWindowViewPixelBuffer(),
+               !isLikelyBlackFrame(fallbackBuffer) {
+                callback(fallbackBuffer, timestamp, playbackTime)
+            }
+            return
+        }
+
         // Use screenshot command to extract frame to temporary file
         let tempDir = FileManager.default.temporaryDirectory
         let screenshotPath = tempDir.appendingPathComponent("mpv_screenshot_\(UUID().uuidString).png")
-        
+
         // Execute screenshot command (screenshot-to-file is async, so we need to wait)
         guard runScreenshotCommand(handle: handle, outputPath: screenshotPath) else {
+            lastScreenshotCommandFailureAt = timestamp
             // Fall back to rendering snapshot when mpv screenshot command is unavailable.
             if let fallbackBuffer = snapshotWindowViewPixelBuffer() {
                 if !isLikelyBlackFrame(fallbackBuffer) {
@@ -866,12 +880,13 @@ class MPVPlayerWrapper: ObservableObject {
             }
             return
         }
-        
+
         // Wait for file to be written (screenshot command is async)
         var attempts = 0
         let maxAttempts = 20 // 2 seconds max wait
         while attempts < maxAttempts {
             if FileManager.default.fileExists(atPath: screenshotPath.path) {
+                lastScreenshotCommandFailureAt = nil
                 loadScreenshotAsPixelBuffer(
                     from: screenshotPath,
                     timestamp: timestamp,
@@ -884,6 +899,7 @@ class MPVPlayerWrapper: ObservableObject {
             attempts += 1
         }
         try? FileManager.default.removeItem(at: screenshotPath)
+        lastScreenshotCommandFailureAt = timestamp
         if let fallbackBuffer = snapshotWindowViewPixelBuffer() {
             if !isLikelyBlackFrame(fallbackBuffer) {
                 callback(fallbackBuffer, timestamp, playbackTime)
@@ -1094,13 +1110,13 @@ class MPVPlayerWrapper: ObservableObject {
     private func runScreenshotCommand(handle: OpaquePointer, outputPath: URL) -> Bool {
         #if canImport(Libmpv)
         let escapedPath = outputPath.path.replacingOccurrences(of: "\"", with: "\\\"")
-        let videoCommand = "screenshot-to-file \"\(escapedPath)\" video"
+        let videoCommand = "no-osd screenshot-to-file \"\(escapedPath)\" video"
         if mpv_command_string(handle, videoCommand) == 0 {
             return true
         }
 
         // Some streams/platform combinations only allow window capture.
-        let windowCommand = "screenshot-to-file \"\(escapedPath)\" window"
+        let windowCommand = "no-osd screenshot-to-file \"\(escapedPath)\" window"
         return mpv_command_string(handle, windowCommand) == 0
         #else
         return false
@@ -1497,6 +1513,20 @@ class MPVPlayerWrapper: ObservableObject {
         let windowSeconds: TimeInterval?
         let liveEdgeTime: TimeInterval?
         let cacheDuration: TimeInterval?
+        let rawInputRateBps: Int?
+        let totalBytesRead: Int64?
+    }
+
+    struct TransportMetricsSnapshot {
+        let resolution: CGSize?
+        let bitrate: Int?
+        let frameRate: Double?
+        let codecName: String?
+        let frameType: String?
+        let cacheDurationSeconds: TimeInterval?
+        let seekableWindowSeconds: TimeInterval?
+        let rawInputRateBps: Int?
+        let totalBytesRead: Int64?
     }
 
     private struct DemuxerCacheRange {
@@ -1507,6 +1537,8 @@ class MPVPlayerWrapper: ObservableObject {
     private struct DemuxerCacheState {
         let ranges: [DemuxerCacheRange]
         let cacheDuration: Double?
+        let rawInputRateBps: Int?
+        let totalBytesRead: Int64?
     }
 
     static func windowSecondsForSeekableRanges(_ ranges: [(start: Double, end: Double)]) -> TimeInterval? {
@@ -1534,10 +1566,52 @@ class MPVPlayerWrapper: ObservableObject {
         return LiveCacheMetrics(
             windowSeconds: window,
             liveEdgeTime: maxEnd,
-            cacheDuration: cacheDuration
+            cacheDuration: cacheDuration,
+            rawInputRateBps: state.rawInputRateBps,
+            totalBytesRead: state.totalBytesRead
         )
         #else
         return nil
+        #endif
+    }
+
+    func getTransportMetricsSnapshot() -> TransportMetricsSnapshot {
+        #if canImport(Libmpv)
+        let metadata = getMetadata()
+        let cacheMetrics = liveCacheMetrics()
+        let resolvedRxRateBps: Int?
+        if let rawInputRateBps = cacheMetrics?.rawInputRateBps, rawInputRateBps > 0 {
+            resolvedRxRateBps = rawInputRateBps
+        } else if let bitrate = metadata.bitrate, bitrate > 0 {
+            // Fallback when demux raw rate is unavailable on some protocols/builds.
+            resolvedRxRateBps = max(1, bitrate / 8)
+        } else {
+            resolvedRxRateBps = nil
+        }
+
+        return TransportMetricsSnapshot(
+            resolution: metadata.resolution,
+            bitrate: metadata.bitrate,
+            frameRate: metadata.frameRate,
+            codecName: metadata.codecName,
+            frameType: currentFrameType(),
+            cacheDurationSeconds: cacheMetrics?.cacheDuration,
+            seekableWindowSeconds: cacheMetrics?.windowSeconds,
+            rawInputRateBps: resolvedRxRateBps,
+            totalBytesRead: cacheMetrics?.totalBytesRead
+        )
+        #else
+        return TransportMetricsSnapshot(
+            resolution: nil,
+            bitrate: nil,
+            frameRate: nil,
+            codecName: nil,
+            frameType: nil,
+            cacheDurationSeconds: nil,
+            seekableWindowSeconds: nil,
+            rawInputRateBps: nil,
+            totalBytesRead: nil
+        )
         #endif
     }
 
@@ -1588,11 +1662,14 @@ class MPVPlayerWrapper: ObservableObject {
         let list = nodeList.pointee
         var ranges: [DemuxerCacheRange] = []
         var cacheDuration: Double?
+        var rawInputRateBps: Int?
+        var totalBytesRead: Int64?
 
         for index in 0..<Int(list.num) {
             guard let keyPtr = list.keys?[index] else { continue }
             let key = String(cString: keyPtr)
             let value = list.values[index]
+            let lowerKey = key.lowercased()
 
             switch key {
             case "seekable-ranges":
@@ -1601,12 +1678,99 @@ class MPVPlayerWrapper: ObservableObject {
                 }
             case "cache-duration":
                 cacheDuration = nodeToDouble(value)
+            case "total-bytes":
+                if let numericValue = nodeToDouble(value), numericValue >= 0 {
+                    totalBytesRead = Int64(numericValue)
+                }
+            case "fw-bytes":
+                if totalBytesRead == nil, let numericValue = nodeToDouble(value), numericValue >= 0 {
+                    totalBytesRead = Int64(numericValue)
+                }
             default:
-                break
+                if rawInputRateBps == nil, let numericValue = nodeToDouble(value) {
+                    if lowerKey == "raw-input-rate" {
+                        rawInputRateBps = Int(max(0, numericValue))
+                    } else if lowerKey.contains("input")
+                                && lowerKey.contains("rate")
+                                && (lowerKey.contains("byte") || lowerKey.contains("raw")) {
+                        rawInputRateBps = Int(max(0, numericValue))
+                    }
+                }
             }
         }
 
-        return DemuxerCacheState(ranges: ranges, cacheDuration: cacheDuration)
+        if rawInputRateBps == nil {
+            rawInputRateBps = readFirstNumericProperty(
+                handle: handle,
+                names: [
+                    "demuxer-cache-state/raw-input-rate",
+                    "demuxer-cache-state/cache-speed",
+                    "cache-speed"
+                ]
+            ).map { Int(max(0, $0)) }
+        }
+
+        if totalBytesRead == nil {
+            totalBytesRead = readFirstNumericProperty(
+                handle: handle,
+                names: [
+                    "demuxer-cache-state/total-bytes",
+                    "demuxer-cache-state/fw-bytes"
+                ]
+            ).map { Int64(max(0, $0)) }
+        }
+
+        return DemuxerCacheState(
+            ranges: ranges,
+            cacheDuration: cacheDuration,
+            rawInputRateBps: rawInputRateBps,
+            totalBytesRead: totalBytesRead
+        )
+    }
+
+    private func readFirstNumericProperty(handle: OpaquePointer, names: [String]) -> Double? {
+        for name in names {
+            if let intValue = readInt64Property(handle: handle, name: name) {
+                return Double(intValue)
+            }
+            if let doubleValue = readDoubleProperty(handle: handle, name: name) {
+                return doubleValue
+            }
+        }
+        return nil
+    }
+
+    private func readInt64Property(handle: OpaquePointer, name: String) -> Int64? {
+        var value: Int64 = 0
+        guard mpv_get_property(handle, name, MPV_FORMAT_INT64, &value) == 0 else {
+            return nil
+        }
+        return value
+    }
+
+    private func readDoubleProperty(handle: OpaquePointer, name: String) -> Double? {
+        var value: Double = 0
+        guard mpv_get_property(handle, name, MPV_FORMAT_DOUBLE, &value) == 0 else {
+            return nil
+        }
+        return value.isFinite ? value : nil
+    }
+
+    private func readFlagProperty(handle: OpaquePointer, name: String) -> Bool? {
+        var value: Int32 = 0
+        guard mpv_get_property(handle, name, MPV_FORMAT_FLAG, &value) == 0 else {
+            return nil
+        }
+        return value != 0
+    }
+
+    private func readStringProperty(handle: OpaquePointer, name: String) -> String? {
+        var node = mpv_node()
+        guard mpv_get_property(handle, name, MPV_FORMAT_NODE, &node) == 0 else {
+            return nil
+        }
+        defer { mpv_free_node_contents(&node) }
+        return stringFromNode(node)
     }
 
     private func parseSeekableRanges(_ node: mpv_node) -> [DemuxerCacheRange]? {
@@ -1664,18 +1828,128 @@ class MPVPlayerWrapper: ObservableObject {
     private func seekableRangeWindow(_ ranges: [DemuxerCacheRange]) -> TimeInterval? {
         MPVPlayerWrapper.windowSecondsForSeekableRanges(ranges.map { (start: $0.start, end: $0.end) })
     }
+
+    private func stringFromNode(_ node: mpv_node) -> String? {
+        guard node.format == MPV_FORMAT_STRING, let ptr = node.u.string else { return nil }
+        let value = String(cString: ptr).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func boolFromNode(_ node: mpv_node) -> Bool? {
+        switch node.format {
+        case MPV_FORMAT_FLAG:
+            return node.u.flag != 0
+        case MPV_FORMAT_INT64:
+            return node.u.int64 != 0
+        default:
+            return nil
+        }
+    }
+
+    private func selectedVideoCodecFromTrackList(handle: OpaquePointer) -> String? {
+        var node = mpv_node()
+        guard mpv_get_property(handle, "track-list", MPV_FORMAT_NODE, &node) == 0 else {
+            return nil
+        }
+        defer { mpv_free_node_contents(&node) }
+
+        guard node.format == MPV_FORMAT_NODE_ARRAY, let listPtr = node.u.list else {
+            return nil
+        }
+
+        var fallbackCodec: String?
+        let list = listPtr.pointee
+        for index in 0..<Int(list.num) {
+            let entry = list.values[index]
+            guard entry.format == MPV_FORMAT_NODE_MAP, let mapPtr = entry.u.list else { continue }
+            let map = mapPtr.pointee
+
+            var type: String?
+            var codec: String?
+            var codecName: String?
+            var codecDescription: String?
+            var selected = false
+
+            for mapIndex in 0..<Int(map.num) {
+                guard let keyPtr = map.keys?[mapIndex] else { continue }
+                let key = String(cString: keyPtr)
+                let value = map.values[mapIndex]
+
+                switch key {
+                case "type":
+                    type = stringFromNode(value)
+                case "codec":
+                    codec = stringFromNode(value)
+                case "codec-name":
+                    codecName = stringFromNode(value)
+                case "codec-desc":
+                    codecDescription = stringFromNode(value)
+                case "selected":
+                    selected = boolFromNode(value) ?? false
+                default:
+                    break
+                }
+            }
+
+            guard type == "video" else { continue }
+            let resolvedCodec = codecName ?? codec ?? codecDescription
+            if fallbackCodec == nil {
+                fallbackCodec = resolvedCodec
+            }
+            if selected, let resolvedCodec {
+                return resolvedCodec
+            }
+        }
+
+        return fallbackCodec
+    }
+
+    private func currentFrameType() -> String? {
+        guard let handle = mpvHandle else { return nil }
+
+        if let keyframe = readFlagProperty(handle: handle, name: "packet-video-keyframe") {
+            return keyframe ? "I" : "P"
+        }
+
+        var node = mpv_node()
+        guard mpv_get_property(handle, "video-frame-info", MPV_FORMAT_NODE, &node) == 0 else {
+            return nil
+        }
+        defer { mpv_free_node_contents(&node) }
+
+        guard node.format == MPV_FORMAT_NODE_MAP, let mapPtr = node.u.list else {
+            return nil
+        }
+
+        let map = mapPtr.pointee
+        for mapIndex in 0..<Int(map.num) {
+            guard let keyPtr = map.keys?[mapIndex] else { continue }
+            let key = String(cString: keyPtr).lowercased()
+            guard key.contains("type"), let value = stringFromNode(map.values[mapIndex]) else { continue }
+            let uppercased = value.uppercased()
+            if uppercased.hasPrefix("I") { return "I" }
+            if uppercased.hasPrefix("P") { return "P" }
+            if uppercased.hasPrefix("B") { return "B" }
+        }
+
+        return nil
+    }
+
     #endif
     
     /// Get stream metadata (resolution, bitrate, frame rate)
-    func getMetadata() -> (resolution: CGSize?, bitrate: Int?, frameRate: Double?) {
+    func getMetadata() -> (resolution: CGSize?, bitrate: Int?, frameRate: Double?, codecName: String?) {
         #if canImport(Libmpv)
         guard let handle = mpvHandle else {
-            return (nil, nil, nil)
+            return (nil, nil, nil, nil)
         }
         
         var resolution: CGSize?
         var bitrate: Int?
         var frameRate: Double?
+        let codecName = selectedVideoCodecFromTrackList(handle: handle)
+            ?? readStringProperty(handle: handle, name: "video-codec")
+            ?? readStringProperty(handle: handle, name: "video-format")
         
         // Get resolution
         var width: Int64 = 0
@@ -1685,12 +1959,31 @@ class MPVPlayerWrapper: ObservableObject {
         if mpv_get_property(handle, "video-params/dw", formatInt64, &width) == 0,
            mpv_get_property(handle, "video-params/dh", formatInt64, &height) == 0 {
             resolution = CGSize(width: Int(width), height: Int(height))
+        } else if mpv_get_property(handle, "video-params/w", formatInt64, &width) == 0,
+                  mpv_get_property(handle, "video-params/h", formatInt64, &height) == 0 {
+            resolution = CGSize(width: Int(width), height: Int(height))
+        } else if let widthFallback = readFirstNumericProperty(
+            handle: handle,
+            names: ["video-out-params/w", "dwidth"]
+        ), let heightFallback = readFirstNumericProperty(
+            handle: handle,
+            names: ["video-out-params/h", "dheight"]
+        ), widthFallback > 0, heightFallback > 0 {
+            resolution = CGSize(width: Int(widthFallback), height: Int(heightFallback))
         }
         
         // Get frame rate
-        var fps: Double = 0
-        let formatDouble = MPV_FORMAT_DOUBLE
-        if mpv_get_property(handle, "video-params/fps", formatDouble, &fps) == 0 {
+        if let fps = readFirstNumericProperty(
+            handle: handle,
+            names: [
+                "video-params/fps",
+                "video-out-params/fps",
+                "estimated-vf-fps",
+                "container-fps",
+                "display-fps",
+                "fps"
+            ]
+        ), fps > 0 {
             frameRate = fps
         }
         
@@ -1698,11 +1991,13 @@ class MPVPlayerWrapper: ObservableObject {
         var br: Int64 = 0
         if mpv_get_property(handle, "video-bitrate", formatInt64, &br) == 0 {
             bitrate = Int(br)
+        } else if mpv_get_property(handle, "packet-video-bitrate", formatInt64, &br) == 0 {
+            bitrate = Int(br)
         }
         
-        return (resolution, bitrate, frameRate)
+        return (resolution, bitrate, frameRate, codecName)
         #else
-        return (nil, nil, nil)
+        return (nil, nil, nil, nil)
         #endif
     }
     

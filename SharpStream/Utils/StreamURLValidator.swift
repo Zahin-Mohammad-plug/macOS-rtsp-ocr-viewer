@@ -87,6 +87,7 @@ struct StreamURLValidator {
         guard validation.isValid else {
             return .invalidURL
         }
+        let isSRTListener = isSRTListenerURL(urlString)
 
         let testPlayer = MPVPlayerWrapper(headless: true)
         defer { testPlayer.cleanup() }
@@ -100,7 +101,9 @@ struct StreamURLValidator {
                 continuation.yield(event)
             }
             continuation.onTermination = { _ in
-                testPlayer.eventHandler = nil
+                Task { @MainActor in
+                    testPlayer.eventHandler = nil
+                }
             }
         }
 
@@ -114,7 +117,7 @@ struct StreamURLValidator {
                     case .fileLoaded:
                         return .success
                     case .loadFailed(let message):
-                        return mapProbeError(message)
+                        return mapProbeError(message, isSRTListener: isSRTListener)
                     case .endFile:
                         return .unknownError("Playback ended before stream became active")
                     case .shutdown:
@@ -131,14 +134,17 @@ struct StreamURLValidator {
 
             let result = await group.next() ?? .unknownError("Probe returned no result")
             group.cancelAll()
+            if isSRTListener, result == .timeout {
+                return .waitingForInboundCaller
+            }
             return result
         }
     }
 
-    private static func mapProbeError(_ message: String) -> ConnectionTestResult {
+    private static nonisolated func mapProbeError(_ message: String, isSRTListener: Bool) -> ConnectionTestResult {
         let lower = message.lowercased()
         if lower.contains("timed out") || lower.contains("timeout") {
-            return .timeout
+            return isSRTListener ? .waitingForInboundCaller : .timeout
         }
         if lower.contains("refused") || lower.contains("unreachable") || lower.contains("route") {
             return .connectionRefused
@@ -147,6 +153,18 @@ struct StreamURLValidator {
             return .authenticationRequired
         }
         return .unknownError(message)
+    }
+
+    private static nonisolated func isSRTListenerURL(_ urlString: String) -> Bool {
+        guard StreamProtocol.detect(from: urlString) == .srt,
+              let components = URLComponents(string: urlString),
+              let queryItems = components.queryItems else {
+            return false
+        }
+        return queryItems.contains {
+            $0.name.caseInsensitiveCompare("mode") == .orderedSame &&
+            ($0.value ?? "").caseInsensitiveCompare("listener") == .orderedSame
+        }
     }
 }
 
@@ -171,6 +189,7 @@ enum ValidationResult {
 
 enum ConnectionTestResult: Equatable {
     case success
+    case waitingForInboundCaller
     case timeout
     case authenticationRequired
     case connectionRefused
@@ -181,6 +200,8 @@ enum ConnectionTestResult: Equatable {
         switch self {
         case .success:
             return "Connection successful"
+        case .waitingForInboundCaller:
+            return "Listener is ready. Waiting for inbound caller to connect."
         case .timeout:
             return "Connection timeout - check network and URL"
         case .authenticationRequired:

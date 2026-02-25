@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 
 struct MainWindow: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.openWindow) private var openWindow
     @State private var showStreamList = true
     @State private var isFullscreen = false
     @AppStorage("windowWidth") private var savedWidth: Double = 1200
@@ -37,8 +38,11 @@ struct MainWindow: View {
                 // Controls
                 ControlsView()
                     .padding()
-                    .layoutPriority(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("controlsContainer")
+                    .layoutPriority(1)
             }
         }
         .toolbar {
@@ -88,6 +92,9 @@ struct MainWindow: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .saveCurrentStreamRequested)) { _ in
             prepareCurrentStreamSaveFlow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showStatisticsWindowRequested)) { _ in
+            openStatisticsWindow()
         }
         .sheet(isPresented: $showSaveCurrentStreamSheet) {
             if let saveCurrentStreamDraft {
@@ -238,6 +245,10 @@ struct MainWindow: View {
             window.toggleFullScreen(nil)
         }
     }
+
+    private func openStatisticsWindow() {
+        openWindow(id: "statistics")
+    }
     
     private func saveWindowState() {
         // Only save window size (position is not persisted)
@@ -273,18 +284,28 @@ struct MainWindow: View {
     
     private func setupWindowFrame(window: NSWindow) {
         guard let screen = window.screen ?? NSScreen.main else { return }
+        let screenFrame = screen.visibleFrame
+        let maxWidth = max(800, screenFrame.width)
+        let maxHeight = max(600, screenFrame.height)
+
+        if ProcessInfo.processInfo.environment["SHARPSTREAM_UI_TESTING"] == "1" {
+            // Keep UI automation deterministic and avoid inheriting broken persisted sizes.
+            savedWidth = min(1200, maxWidth)
+            savedHeight = min(800, maxHeight)
+        }
+
+        let resolvedSavedWidth = savedWidth.isFinite ? savedWidth : 1200
+        let resolvedSavedHeight = savedHeight.isFinite ? savedHeight : 800
 
         if !didApplyInitialWindowSize {
-            let targetWidth = max(savedWidth, 800)
-            let targetHeight = max(savedHeight, 600)
+            let targetWidth = min(max(resolvedSavedWidth, 800), maxWidth)
+            let targetHeight = min(max(resolvedSavedHeight, 600), maxHeight)
             window.setContentSize(NSSize(width: targetWidth, height: targetHeight))
             DispatchQueue.main.async {
                 self.didApplyInitialWindowSize = true
             }
         }
-        
-        // Get screen frame excluding dock and menu bar
-        let screenFrame = screen.visibleFrame
+
         let currentFrame = window.frame
         
         // Constrain window to visible frame
@@ -310,6 +331,12 @@ struct MainWindow: View {
         }
         if newFrame.height < 600 {
             newFrame.size.height = 600
+        }
+        if newFrame.width > screenFrame.width {
+            newFrame.size.width = screenFrame.width
+        }
+        if newFrame.height > screenFrame.height {
+            newFrame.size.height = screenFrame.height
         }
         
         // Don't resize if already correct
@@ -388,10 +415,13 @@ struct VideoPlayerView: View {
 
         return ZStack {
             if hasActivePlayer {
-                MPVVideoView(player: streamManager.player)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .accessibilityIdentifier("videoSurface")
-                    .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
+                ZStack {
+                    MPVVideoView(player: streamManager.player)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("videoSurface")
+                .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
                         handleFileDrop(providers: providers)
                     }
             } else {
@@ -443,6 +473,11 @@ struct VideoPlayerView: View {
             // OCR Overlay
             if appState.ocrEngine.isEnabled {
                 OCROverlayView()
+            }
+        }
+        .contextMenu {
+            Button("Show Statistics") {
+                NotificationCenter.default.post(name: .showStatisticsWindowRequested, object: nil)
             }
         }
     }
@@ -589,7 +624,7 @@ struct VideoPlayerView: View {
         )
         
         print("▶️ Connecting to stream: \(stream.name)")
-        print("   URL: \(stream.url)")
+        print("   URL: \(StreamURLRedactor.redacted(stream.url))")
         
         appState.streamManager.connect(to: stream)
         
