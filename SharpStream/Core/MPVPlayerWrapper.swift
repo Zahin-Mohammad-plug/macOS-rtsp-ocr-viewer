@@ -66,6 +66,7 @@ class MPVPlayerWrapper: ObservableObject {
     private var timeUpdateErrorCount = 0 // Track errors for logging
     private var eventLogCount = 0 // Track event logging to avoid spam
     private var lastSeekTime: TimeInterval = -1 // Track last seek attempt to detect failures
+    private var liveBufferSettings: LiveBufferSettings?
     
     // MARK: - Initialization
     
@@ -179,6 +180,7 @@ class MPVPlayerWrapper: ObservableObject {
 
         // Start metadata update timer
         startMetadataUpdateTimer()
+        applyLiveBufferSettingsIfPossible()
         print("✅ MPVPlayerWrapper initialization complete")
 
         // If a stream was queued, load it now
@@ -586,6 +588,33 @@ class MPVPlayerWrapper: ObservableObject {
         } else {
             play()
         }
+    }
+
+    @discardableResult
+    func seekAbsolute(_ time: TimeInterval, exact: Bool = false) -> Bool {
+        #if canImport(Libmpv)
+        guard let handle = mpvHandle else { return false }
+        guard time.isFinite else { return false }
+        let clampedTime = max(0, time)
+        let mode = exact ? "absolute+exact" : "absolute"
+        let command = "seek \(clampedTime) \(mode)"
+        let result = mpv_command_string(handle, command)
+        if result == 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.updateCurrentTime()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.updateCurrentTime()
+            }
+            return true
+        }
+        let errorString = mpv_error_string(result)
+        let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
+        print("❌ Absolute seek failed: \(result) (\(error))")
+        return false
+        #else
+        return false
+        #endif
     }
     
     @discardableResult
@@ -1441,6 +1470,201 @@ class MPVPlayerWrapper: ObservableObject {
         }
         #endif
     }
+
+    #if canImport(Libmpv)
+    private func setOptionOrProperty(handle: OpaquePointer, name: String, value: String) {
+        if isInitialized {
+            let result = mpv_set_property_string(handle, name, value)
+            if result < 0 {
+                let errorString = mpv_error_string(result)
+                let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
+                print("⚠️ MPV set property failed (\(name)=\(value)): \(result) (\(error))")
+            }
+        } else {
+            mpv_set_option_string(handle, name, value)
+        }
+    }
+    #endif
+
+    // MARK: - Live DVR Support
+
+    struct LiveBufferSettings: Equatable {
+        let maxWindowSeconds: TimeInterval
+        let backBufferBytes: Int64?
+    }
+
+    struct LiveCacheMetrics {
+        let windowSeconds: TimeInterval?
+        let liveEdgeTime: TimeInterval?
+        let cacheDuration: TimeInterval?
+    }
+
+    private struct DemuxerCacheRange {
+        let start: Double
+        let end: Double
+    }
+
+    private struct DemuxerCacheState {
+        let ranges: [DemuxerCacheRange]
+        let cacheDuration: Double?
+    }
+
+    static func windowSecondsForSeekableRanges(_ ranges: [(start: Double, end: Double)]) -> TimeInterval? {
+        guard !ranges.isEmpty else { return nil }
+        let minStart = ranges.map { $0.start }.min() ?? 0
+        let maxEnd = ranges.map { $0.end }.max() ?? 0
+        let window = max(0, maxEnd - minStart)
+        return window > 0 ? window : nil
+    }
+
+    func liveSeekableWindowSeconds() -> TimeInterval? {
+        liveCacheMetrics()?.windowSeconds
+    }
+
+    func liveCacheMetrics() -> LiveCacheMetrics? {
+        #if canImport(Libmpv)
+        guard let handle = mpvHandle else { return nil }
+        guard let state = fetchDemuxerCacheState(handle: handle) else { return nil }
+
+        let maxEnd = state.ranges.map { $0.end }.max()
+        let rangeWindow = seekableRangeWindow(state.ranges)
+        let cacheDuration = (state.cacheDuration ?? 0) > 0 ? state.cacheDuration : nil
+        let window = rangeWindow ?? cacheDuration
+
+        return LiveCacheMetrics(
+            windowSeconds: window,
+            liveEdgeTime: maxEnd,
+            cacheDuration: cacheDuration
+        )
+        #else
+        return nil
+        #endif
+    }
+
+    func applyLiveBufferSettings(maxWindowSeconds: TimeInterval, backBufferBytes: Int64?) {
+        let sanitizedSeconds = max(0, maxWindowSeconds)
+        liveBufferSettings = LiveBufferSettings(
+            maxWindowSeconds: sanitizedSeconds,
+            backBufferBytes: backBufferBytes
+        )
+        applyLiveBufferSettingsIfPossible()
+    }
+
+    private func applyLiveBufferSettingsIfPossible() {
+        #if canImport(Libmpv)
+        guard let handle = mpvHandle,
+              let settings = liveBufferSettings else {
+            return
+        }
+
+        let secondsValue = max(1, Int(settings.maxWindowSeconds.rounded()))
+        if secondsValue <= 0 {
+            return
+        }
+
+        let cacheValue = String(secondsValue)
+        setOptionOrProperty(handle: handle, name: "cache", value: "yes")
+        setOptionOrProperty(handle: handle, name: "cache-secs", value: cacheValue)
+        setOptionOrProperty(handle: handle, name: "demuxer-readahead-secs", value: cacheValue)
+
+        if let backBytes = settings.backBufferBytes, backBytes > 0 {
+            setOptionOrProperty(handle: handle, name: "demuxer-max-back-bytes", value: String(backBytes))
+        }
+        #endif
+    }
+
+    #if canImport(Libmpv)
+    private func fetchDemuxerCacheState(handle: OpaquePointer) -> DemuxerCacheState? {
+        var node = mpv_node()
+        let result = mpv_get_property(handle, "demuxer-cache-state", MPV_FORMAT_NODE, &node)
+        guard result == 0 else { return nil }
+        defer { mpv_free_node_contents(&node) }
+
+        guard node.format == MPV_FORMAT_NODE_MAP,
+              let nodeList = node.u.list else {
+            return nil
+        }
+
+        let list = nodeList.pointee
+        var ranges: [DemuxerCacheRange] = []
+        var cacheDuration: Double?
+
+        for index in 0..<Int(list.num) {
+            guard let keyPtr = list.keys?[index] else { continue }
+            let key = String(cString: keyPtr)
+            let value = list.values[index]
+
+            switch key {
+            case "seekable-ranges":
+                if let parsedRanges = parseSeekableRanges(value) {
+                    ranges.append(contentsOf: parsedRanges)
+                }
+            case "cache-duration":
+                cacheDuration = nodeToDouble(value)
+            default:
+                break
+            }
+        }
+
+        return DemuxerCacheState(ranges: ranges, cacheDuration: cacheDuration)
+    }
+
+    private func parseSeekableRanges(_ node: mpv_node) -> [DemuxerCacheRange]? {
+        guard node.format == MPV_FORMAT_NODE_ARRAY,
+              let list = node.u.list else {
+            return nil
+        }
+
+        var ranges: [DemuxerCacheRange] = []
+        let nodeList = list.pointee
+
+        for index in 0..<Int(nodeList.num) {
+            let entry = nodeList.values[index]
+            guard entry.format == MPV_FORMAT_NODE_MAP,
+                  let mapList = entry.u.list else { continue }
+
+            let map = mapList.pointee
+            var start: Double?
+            var end: Double?
+
+            for mapIndex in 0..<Int(map.num) {
+                guard let mapKeyPtr = map.keys?[mapIndex] else { continue }
+                let mapKey = String(cString: mapKeyPtr)
+                let mapValue = map.values[mapIndex]
+
+                switch mapKey {
+                case "start":
+                    start = nodeToDouble(mapValue)
+                case "end":
+                    end = nodeToDouble(mapValue)
+                default:
+                    break
+                }
+            }
+
+            if let start, let end {
+                ranges.append(DemuxerCacheRange(start: start, end: end))
+            }
+        }
+
+        return ranges.isEmpty ? nil : ranges
+    }
+
+    private func nodeToDouble(_ node: mpv_node) -> Double? {
+        switch node.format {
+        case MPV_FORMAT_DOUBLE:
+            return node.u.double_
+        case MPV_FORMAT_INT64:
+            return Double(node.u.int64)
+        default:
+            return nil
+        }
+    }
+
+    private func seekableRangeWindow(_ ranges: [DemuxerCacheRange]) -> TimeInterval? {
+        MPVPlayerWrapper.windowSecondsForSeekableRanges(ranges.map { (start: $0.start, end: $0.end) })
+    }
+    #endif
     
     /// Get stream metadata (resolution, bitrate, frame rate)
     func getMetadata() -> (resolution: CGSize?, bitrate: Int?, frameRate: Double?) {

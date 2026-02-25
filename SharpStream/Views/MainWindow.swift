@@ -17,22 +17,28 @@ struct MainWindow: View {
     @AppStorage("windowWidth") private var savedWidth: Double = 1200
     @AppStorage("windowHeight") private var savedHeight: Double = 800
     @State private var observerTokens: [NSObjectProtocol] = []
+    @State private var showSaveCurrentStreamSheet = false
+    @State private var saveCurrentStreamDraft: SavedStream?
+    @State private var didApplyInitialWindowSize = false
     
     var body: some View {
         HSplitView {
             if showStreamList {
                 StreamListView()
-                    .frame(minWidth: 250, idealWidth: 300)
+                    .frame(minWidth: 200, idealWidth: 220)
             }
             
             VStack(spacing: 0) {
                 // Video player area (handles drag and drop internally)
                 VideoPlayerView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .layoutPriority(0)
                 
                 // Controls
                 ControlsView()
                     .padding()
+                    .layoutPriority(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .toolbar {
@@ -40,6 +46,7 @@ struct MainWindow: View {
                 Button(action: { showStreamList.toggle() }) {
                     Image(systemName: "sidebar.left")
                 }
+                .accessibilityIdentifier("toggleSidebarToolbarButton")
             }
             
             ToolbarItem(placement: .automatic) {
@@ -58,6 +65,12 @@ struct MainWindow: View {
             }
         }
         .onAppear {
+            if ProcessInfo.processInfo.environment["SHARPSTREAM_UI_TESTING"] == "1" {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
+                }
+            }
             checkRecoveryData()
             restoreWindowState()
             setupWindowConstraints()
@@ -69,10 +82,20 @@ struct MainWindow: View {
         .onDisappear {
             removeObservers()
         }
-        .frame(width: savedWidth, height: savedHeight)
         .frame(minWidth: 800, minHeight: 600)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
             saveWindowState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .saveCurrentStreamRequested)) { _ in
+            prepareCurrentStreamSaveFlow()
+        }
+        .sheet(isPresented: $showSaveCurrentStreamSheet) {
+            if let saveCurrentStreamDraft {
+                StreamConfigurationView(stream: saveCurrentStreamDraft) { configuredStream in
+                    saveCurrentStream(configuredStream)
+                    showSaveCurrentStreamSheet = false
+                }
+            }
         }
         .background(WindowAccessor { window in
             if let window = window {
@@ -125,10 +148,52 @@ struct MainWindow: View {
 
         return trimmed
     }
+
+    private func prepareCurrentStreamSaveFlow() {
+        guard let currentStream = appState.streamManager.currentStream else {
+            showAlert(title: "No Active Stream", message: "Connect to a stream before saving it.")
+            return
+        }
+
+        if let existing = appState.streamDatabase.getStream(byURL: currentStream.url) {
+            saveCurrentStreamDraft = existing
+        } else {
+            saveCurrentStreamDraft = SavedStream(
+                name: currentStream.name,
+                url: currentStream.url,
+                protocolType: currentStream.protocolType,
+                lastUsed: Date()
+            )
+        }
+
+        showSaveCurrentStreamSheet = true
+    }
+
+    private func saveCurrentStream(_ configuredStream: SavedStream) {
+        do {
+            _ = try appState.streamDatabase.saveOrUpdateByURL(
+                name: configuredStream.name,
+                url: configuredStream.url,
+                protocolType: configuredStream.protocolType,
+                lastUsed: Date()
+            )
+            NotificationCenter.default.post(name: .savedStreamsUpdated, object: nil)
+            NotificationCenter.default.post(name: .recentStreamsUpdated, object: nil)
+        } catch {
+            showAlert(
+                title: "Save Failed",
+                message: "Unable to save stream: \(error.localizedDescription)"
+            )
+        }
+    }
     
     private func checkRecoveryData() {
         Task {
             if let recoveryData = await appState.bufferManager.getRecoveryData() {
+                if ProcessInfo.processInfo.environment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] == "1" {
+                    await appState.bufferManager.clearRecoveryData()
+                    return
+                }
                 await MainActor.run {
                     showRecoveryDialog(recoveryData: recoveryData)
                 }
@@ -177,8 +242,9 @@ struct MainWindow: View {
     private func saveWindowState() {
         // Only save window size (position is not persisted)
         if let window = NSApplication.shared.windows.first {
-            savedWidth = Double(window.frame.width)
-            savedHeight = Double(window.frame.height)
+            let contentRect = window.contentRect(forFrameRect: window.frame)
+            savedWidth = Double(contentRect.width)
+            savedHeight = Double(contentRect.height)
         }
     }
     
@@ -195,9 +261,27 @@ struct MainWindow: View {
             }
         }
     }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
     
     private func setupWindowFrame(window: NSWindow) {
-        guard let screen = window.screen else { return }
+        guard let screen = window.screen ?? NSScreen.main else { return }
+
+        if !didApplyInitialWindowSize {
+            let targetWidth = max(savedWidth, 800)
+            let targetHeight = max(savedHeight, 600)
+            window.setContentSize(NSSize(width: targetWidth, height: targetHeight))
+            DispatchQueue.main.async {
+                self.didApplyInitialWindowSize = true
+            }
+        }
         
         // Get screen frame excluding dock and menu bar
         let screenFrame = screen.visibleFrame
@@ -234,8 +318,9 @@ struct MainWindow: View {
         }
         
         // Update saved values
-        savedWidth = Double(newFrame.width)
-        savedHeight = Double(newFrame.height)
+        let contentRect = window.contentRect(forFrameRect: newFrame)
+        savedWidth = Double(contentRect.width)
+        savedHeight = Double(contentRect.height)
     }
     
     private func setupErrorNotifications() {

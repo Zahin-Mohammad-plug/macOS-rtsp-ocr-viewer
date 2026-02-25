@@ -12,6 +12,11 @@ import UniformTypeIdentifiers
 struct AppMenu: Commands {
     @ObservedObject var appState: AppState
     @State private var showingOpenFileDialog = false
+    @AppStorage("copyCommandMode") private var copyCommandModeRaw: String = CopyCommandMode.ocrText.rawValue
+
+    private var copyCommandMode: CopyCommandMode {
+        CopyCommandMode(rawValue: copyCommandModeRaw) ?? .ocrText
+    }
     
     var body: some Commands {
         // File Menu
@@ -70,6 +75,11 @@ struct AppMenu: Commands {
                 showNewStreamDialog()
             }
             .keyboardShortcut("n", modifiers: .command)
+
+            Button("Save Current Stream...") {
+                saveCurrentStream()
+            }
+            .disabled(appState.currentStream == nil)
             
             Divider()
             
@@ -163,6 +173,11 @@ struct AppMenu: Commands {
                 performSmartPause()
             }
             .keyboardShortcut("s", modifiers: .command)
+
+            Button("Smart Pause (Cmd+Space)") {
+                performSmartPause()
+            }
+            .keyboardShortcut(.space, modifiers: [.command])
             
             Divider()
             
@@ -221,6 +236,10 @@ struct AppMenu: Commands {
         // For now, trigger via notification or state
         NotificationCenter.default.post(name: NSNotification.Name("ShowNewStreamDialog"), object: nil)
     }
+
+    private func saveCurrentStream() {
+        NotificationCenter.default.post(name: .saveCurrentStreamRequested, object: nil)
+    }
     
     private func exportCurrentFrame() {
         // Export current frame
@@ -237,7 +256,12 @@ struct AppMenu: Commands {
     
     private func copyToClipboard() {
         // Copy current OCR text or frame
-        NotificationCenter.default.post(name: NSNotification.Name("CopyToClipboard"), object: nil)
+        switch copyCommandMode {
+        case .ocrText:
+            NotificationCenter.default.post(name: .copyOCRTextNow, object: nil)
+        case .frame:
+            NotificationCenter.default.post(name: .copyFrameNow, object: nil)
+        }
     }
     
     private func pasteStreamURL() {
@@ -286,4 +310,12 @@ struct AppMenu: Commands {
     private func zoomWindow() {
         NSApplication.shared.keyWindow?.zoom(nil)
     }
+}
+
+extension Notification.Name {
+    static let saveCurrentStreamRequested = Notification.Name("SaveCurrentStreamRequested")
+    static let savedStreamsUpdated = Notification.Name("SavedStreamsUpdated")
+    static let copyOCRTextNow = Notification.Name("CopyOCRTextNow")
+    static let copyFrameNow = Notification.Name("CopyFrameNow")
+    static let quickSaveFrame = Notification.Name("QuickSaveFrame")
 }

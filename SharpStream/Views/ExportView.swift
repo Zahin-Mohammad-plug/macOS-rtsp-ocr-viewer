@@ -13,6 +13,8 @@ struct ExportView: View {
     @EnvironmentObject var appState: AppState
     @AppStorage("defaultExportFormat") private var defaultExportFormat: String = "PNG"
     @AppStorage("defaultJPEGQuality") private var defaultJPEGQuality: Double = 0.8
+    @AppStorage("lastFrameExportDirectory") private var lastFrameExportDirectory: String = ""
+    @AppStorage("showSuccessAlerts") private var showSuccessAlerts: Bool = false
     @State private var showSavePanel = false
     @State private var exportFormat: ExportFormat = .png
     @State private var jpegQuality: Double = 0.8
@@ -74,9 +76,22 @@ struct ExportView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ExportFrameWithOCR"))) { _ in
             exportFrameWithOCR()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CopyToClipboard"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .copyOCRTextNow)) { _ in
             copyOCRText()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .copyFrameNow)) { _ in
+            copyFrame()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .quickSaveFrame)) { _ in
+            quickSaveFrame()
+        }
+    }
+
+    private var lastExportDirectoryURL: URL? {
+        guard !lastFrameExportDirectory.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: lastFrameExportDirectory)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
     }
     
     private func getCurrentFrame() async -> CVPixelBuffer? {
@@ -172,6 +187,7 @@ struct ExportView: View {
                     }
                     
                     try appState.exportManager.saveFrame(frame, to: url, format: format)
+                    lastFrameExportDirectory = url.deletingLastPathComponent().path
                     
                     // Show success notification
                     await MainActor.run {
@@ -301,6 +317,7 @@ struct ExportView: View {
                     }
                     
                     try appState.exportManager.exportFrameWithOCR(frame, ocrResult: ocrResult, to: url, format: format)
+                    lastFrameExportDirectory = url.deletingLastPathComponent().path
                     
                     await MainActor.run {
                         showSuccessAlert(message: "Frame with OCR exported successfully")
@@ -309,6 +326,46 @@ struct ExportView: View {
                     await MainActor.run {
                         showErrorAlert(message: "Failed to export: \(error.localizedDescription)")
                     }
+                }
+            }
+        }
+    }
+
+    private func quickSaveFrame() {
+        Task {
+            guard let frame = await getCurrentFrame() else {
+                showErrorAlert(message: "No frame available to save")
+                return
+            }
+
+            let directory = lastExportDirectoryURL
+                ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            guard let directory else {
+                showErrorAlert(message: "No valid directory available for quick save")
+                return
+            }
+
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let fileExtension: String
+            switch exportFormat {
+            case .png:
+                fileExtension = "png"
+            case .jpeg:
+                fileExtension = "jpg"
+            }
+
+            let filename = "frame_\(timestamp).\(fileExtension)"
+            let url = directory.appendingPathComponent(filename)
+
+            do {
+                try appState.exportManager.saveFrame(frame, to: url, format: exportFormat)
+                lastFrameExportDirectory = directory.path
+                await MainActor.run {
+                    showSuccessAlert(message: "Frame saved to \(directory.lastPathComponent)")
+                }
+            } catch {
+                await MainActor.run {
+                    showErrorAlert(message: "Failed to quick save frame: \(error.localizedDescription)")
                 }
             }
         }
@@ -324,6 +381,9 @@ struct ExportView: View {
     }
     
     private func showSuccessAlert(message: String) {
+        if !showSuccessAlerts || ProcessInfo.processInfo.environment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] == "1" {
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Success"
         alert.informativeText = message

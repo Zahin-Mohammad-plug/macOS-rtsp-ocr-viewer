@@ -155,6 +155,41 @@ class StreamDatabase {
         sqlite3_finalize(statement)
         return stream
     }
+
+    func getStream(byURL url: String) -> SavedStream? {
+        let targetKey = normalizedURLKey(url)
+        guard !targetKey.isEmpty else { return nil }
+
+        return getAllStreams().first { stream in
+            normalizedURLKey(stream.url) == targetKey
+        }
+    }
+
+    @discardableResult
+    func saveOrUpdateByURL(
+        name: String,
+        url: String,
+        protocolType: StreamProtocol,
+        lastUsed: Date?
+    ) throws -> SavedStream {
+        if var existing = getStream(byURL: url) {
+            existing.name = name
+            existing.url = url
+            existing.protocolType = protocolType
+            existing.lastUsed = lastUsed
+            try saveStream(existing)
+            return existing
+        }
+
+        let created = SavedStream(
+            name: name,
+            url: url,
+            protocolType: protocolType,
+            lastUsed: lastUsed
+        )
+        try saveStream(created)
+        return created
+    }
     
     func deleteStream(byID id: UUID) throws {
         let sql = "DELETE FROM saved_streams WHERE id = ?;"
@@ -214,6 +249,32 @@ class StreamDatabase {
             createdAt: createdAt,
             lastUsed: lastUsed
         )
+    }
+
+    private func normalizedURLKey(_ rawURL: String) -> String {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let detectedProtocol = StreamProtocol.detect(from: trimmed)
+        if detectedProtocol == .file {
+            let fileURL: URL
+            if let parsedURL = URL(string: trimmed), parsedURL.isFileURL {
+                fileURL = parsedURL
+            } else {
+                let expandedPath = (trimmed as NSString).expandingTildeInPath
+                fileURL = URL(fileURLWithPath: expandedPath)
+            }
+
+            return fileURL.standardizedFileURL.absoluteString
+        }
+
+        guard var components = URLComponents(string: trimmed) else {
+            return trimmed
+        }
+
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        return components.url?.absoluteString ?? trimmed
     }
     
     // MARK: - Recent Streams

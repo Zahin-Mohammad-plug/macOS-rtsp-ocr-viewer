@@ -15,7 +15,7 @@ final class SharpStreamUITests: XCTestCase {
 
     func testLaunchSmoke() throws {
         let app = makeApp()
-        app.launch()
+        launchApp(app)
 
         // Verify the main no-stream state is visible at startup.
         XCTAssertTrue(app.staticTexts["No Stream Connected"].waitForExistence(timeout: 5))
@@ -23,7 +23,7 @@ final class SharpStreamUITests: XCTestCase {
 
     func testPasteStreamButtonExists() throws {
         let app = makeApp()
-        app.launch()
+        launchApp(app)
 
         let pasteButton = app.buttons.matching(identifier: "pasteStreamToolbarButton").firstMatch
         XCTAssertTrue(pasteButton.waitForExistence(timeout: 5))
@@ -50,7 +50,7 @@ final class SharpStreamUITests: XCTestCase {
         }
 
         let app = makeApp()
-        app.launch()
+        launchApp(app)
         pasteAndConnect(stream: rtspURL, app: app)
 
         // Wait for stream view state transition and connected controls.
@@ -59,10 +59,19 @@ final class SharpStreamUITests: XCTestCase {
         expectation(for: connectedPredicate, evaluatedWith: noStreamText)
         waitForExpectations(timeout: 12)
 
-        let playPause = app.buttons["playPauseButton"]
-        XCTAssertTrue(playPause.waitForExistence(timeout: 5))
+        let playPause = assertPlayPauseExists(in: app)
         XCTAssertTrue(waitForOverlayToDisappear(in: app, timeout: 10))
         XCTAssertTrue(app.staticTexts["seekModeLabel"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["liveEdgeLabel"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["jumpToLiveButton"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["quickCopyTextButton"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["quickCopyFrameButton"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["quickSaveFrameButton"].waitForExistence(timeout: 5))
+
+        XCTAssertTrue(app.otherElements["videoSurface"].waitForExistence(timeout: 5))
+        assertSidebarToggleResizesVideo(in: app)
+        assertControlsBarNotClipped(in: app)
+        assertJumpToLiveBehavior(in: app)
 
         let smartPause = app.buttons["smartPauseButton"]
         XCTAssertTrue(smartPause.waitForExistence(timeout: 5))
@@ -80,7 +89,7 @@ final class SharpStreamUITests: XCTestCase {
         }
 
         let app = makeApp()
-        app.launch()
+        launchApp(app)
         pasteAndConnect(stream: fileURL, app: app)
 
         let noStreamText = app.staticTexts["No Stream Connected"]
@@ -88,12 +97,14 @@ final class SharpStreamUITests: XCTestCase {
         expectation(for: connectedPredicate, evaluatedWith: noStreamText)
         waitForExpectations(timeout: 12)
 
-        let playPause = app.buttons["playPauseButton"]
-        XCTAssertTrue(playPause.waitForExistence(timeout: 5))
+        let playPause = assertPlayPauseExists(in: app)
         let overlayCleared = waitForOverlayToDisappear(in: app, timeout: 8)
         if !overlayCleared {
             XCTContext.runActivity(named: "Connection overlay persisted; continuing with playback readiness checks") { _ in }
         }
+        XCTAssertTrue(app.buttons["quickCopyTextButton"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["quickCopyFrameButton"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["quickSaveFrameButton"].waitForExistence(timeout: 5))
 
         // Confirm playback is actually moving in file mode.
         var advancedWithoutToggle = waitForCurrentTimeToAdvance(in: app, timeout: 4)
@@ -122,7 +133,18 @@ final class SharpStreamUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] = "1"
         app.launchEnvironment["SHARPSTREAM_ENABLE_SMART_PAUSE_DIAGNOSTICS"] = "1"
+        app.launchEnvironment["SHARPSTREAM_UI_TESTING"] = "1"
         return app
+    }
+
+    private func launchApp(_ app: XCUIApplication) {
+        app.launch()
+        app.activate()
+        let window = app.windows.firstMatch
+        if !window.waitForExistence(timeout: 5) {
+            attachAccessibilityDump(in: app, title: "Main window missing after launch")
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
     }
 
     private func pasteAndConnect(stream: String, app: XCUIApplication) {
@@ -132,6 +154,135 @@ final class SharpStreamUITests: XCTestCase {
         let pasteButton = app.buttons.matching(identifier: "pasteStreamToolbarButton").firstMatch
         XCTAssertTrue(pasteButton.waitForExistence(timeout: 5))
         pasteButton.tap()
+    }
+
+    private func assertJumpToLiveBehavior(in app: XCUIApplication) {
+        let playPause = assertPlayPauseExists(in: app)
+        let jumpToLive = app.buttons["jumpToLiveButton"]
+        XCTAssertTrue(jumpToLive.waitForExistence(timeout: 5))
+
+        playPause.tap()
+
+        let liveEdgeLabel = app.staticTexts["liveEdgeLabel"]
+        if liveEdgeLabel.waitForExistence(timeout: 2) {
+            let initialTime = readableTimeText(from: liveEdgeLabel)
+            RunLoop.current.run(until: Date().addingTimeInterval(2.0))
+            let updatedTime = readableTimeText(from: liveEdgeLabel)
+            XCTAssertNotEqual(initialTime, updatedTime, "Live edge label should advance while paused")
+        }
+
+        let enableDeadline = Date().addingTimeInterval(6)
+        while Date() < enableDeadline && !jumpToLive.isEnabled {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertTrue(jumpToLive.isEnabled, "Jump to Live should enable after pausing to build lag")
+
+        jumpToLive.tap()
+        let disableDeadline = Date().addingTimeInterval(6)
+        while Date() < disableDeadline && jumpToLive.isEnabled {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertFalse(jumpToLive.isEnabled, "Jump to Live should disable after returning to live edge")
+
+        playPause.tap()
+    }
+
+    private func assertSidebarToggleResizesVideo(in app: XCUIApplication) {
+        let videoSurface = app.otherElements["videoSurface"]
+        XCTAssertTrue(videoSurface.waitForExistence(timeout: 5))
+        let initialFrame = videoSurface.frame
+
+        toggleSidebar(in: app)
+        let expandedFrame = videoSurface.frame
+
+        toggleSidebar(in: app)
+        let restoredFrame = videoSurface.frame
+
+        XCTAssertGreaterThan(
+            abs(expandedFrame.width - initialFrame.width),
+            20,
+            "Expected video surface width to change when toggling sidebar"
+        )
+        XCTAssertLessThan(
+            abs(restoredFrame.width - initialFrame.width),
+            10,
+            "Expected video surface width to restore after toggling sidebar twice"
+        )
+    }
+
+    private func assertControlsBarNotClipped(in app: XCUIApplication) {
+        let controls = app.otherElements["controlsContainer"]
+        XCTAssertTrue(controls.waitForExistence(timeout: 5))
+
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+
+        let controlsFrame = controls.frame
+        let windowFrame = window.frame
+
+        XCTAssertGreaterThanOrEqual(
+            controlsFrame.minY + 1,
+            windowFrame.minY,
+            "Controls bar appears clipped at the bottom"
+        )
+        XCTAssertLessThanOrEqual(
+            controlsFrame.maxY - 1,
+            windowFrame.maxY,
+            "Controls bar appears clipped at the top"
+        )
+
+        XCTAssertTrue(playPauseButton(in: app).isHittable)
+        XCTAssertTrue(app.buttons["quickSaveFrameButton"].isHittable)
+    }
+
+    private func playPauseButton(in app: XCUIApplication) -> XCUIElement {
+        let controls = app.otherElements["controlsContainer"]
+        if controls.waitForExistence(timeout: 2) {
+            let button = controls.buttons["playPauseButton"]
+            if button.exists {
+                return button
+            }
+        }
+        return app.buttons["playPauseButton"]
+    }
+
+    @discardableResult
+    private func assertPlayPauseExists(in app: XCUIApplication, timeout: TimeInterval = 5) -> XCUIElement {
+        let button = playPauseButton(in: app)
+        if !button.waitForExistence(timeout: timeout) {
+            attachAccessibilityDump(in: app, title: "Missing playPauseButton")
+            XCTFail("Expected playPauseButton to exist")
+        }
+        return button
+    }
+
+    private func attachAccessibilityDump(in app: XCUIApplication, title: String) {
+        let screenshot = XCUIScreen.main.screenshot()
+        let screenshotAttachment = XCTAttachment(screenshot: screenshot)
+        screenshotAttachment.name = title
+        screenshotAttachment.lifetime = .keepAlways
+        add(screenshotAttachment)
+
+        let dump = app.debugDescription
+        print("=== \(title) accessibility dump start ===")
+        print(dump)
+        print("=== \(title) accessibility dump end ===")
+        let playPauseMatches = app.descendants(matching: .any).matching(identifier: "playPauseButton")
+        print("=== \(title) playPauseButton matches: \(playPauseMatches.count) ===")
+        let dumpAttachment = XCTAttachment(string: dump)
+        dumpAttachment.name = "\(title) accessibility dump"
+        dumpAttachment.lifetime = .keepAlways
+        add(dumpAttachment)
+    }
+
+    private func toggleSidebar(in app: XCUIApplication) {
+        let toggleButton = app.buttons["toggleSidebarToolbarButton"]
+        if toggleButton.exists {
+            toggleButton.tap()
+        } else {
+            app.typeKey("s", modifierFlags: [.command, .control])
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
     }
 
     private func configuredRTSPURL() -> String? {
@@ -174,14 +325,16 @@ final class SharpStreamUITests: XCTestCase {
 
     private func waitForCurrentTimeToAdvance(in app: XCUIApplication, timeout: TimeInterval) -> Bool {
         let timeLabel = app.staticTexts["currentTimeLabel"]
-        guard timeLabel.waitForExistence(timeout: 5) else { return false }
+        let liveEdgeLabel = app.staticTexts["liveEdgeLabel"]
+        let activeLabel = timeLabel.waitForExistence(timeout: 2) ? timeLabel : liveEdgeLabel
+        guard activeLabel.waitForExistence(timeout: 5) else { return false }
 
-        let start = readableTimeText(from: timeLabel)
+        let start = readableTimeText(from: activeLabel)
         let startSeconds = parseTimeLabel(start)
         let endTime = Date().addingTimeInterval(timeout)
         while Date() < endTime {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
-            let current = readableTimeText(from: timeLabel)
+            let current = readableTimeText(from: activeLabel)
             let currentSeconds = parseTimeLabel(current)
             if current != start && currentSeconds > startSeconds {
                 return true
@@ -196,13 +349,15 @@ final class SharpStreamUITests: XCTestCase {
         }
 
         let timeLabel = app.staticTexts["currentTimeLabel"]
-        guard timeLabel.waitForExistence(timeout: 2) else { return false }
+        let liveEdgeLabel = app.staticTexts["liveEdgeLabel"]
+        let activeLabel = timeLabel.waitForExistence(timeout: 2) ? timeLabel : liveEdgeLabel
+        guard activeLabel.waitForExistence(timeout: 2) else { return false }
 
-        let baselineSeconds = parseTimeLabel(readableTimeText(from: timeLabel))
+        let baselineSeconds = parseTimeLabel(readableTimeText(from: activeLabel))
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
-            if parseTimeLabel(readableTimeText(from: timeLabel)) > baselineSeconds {
+            if parseTimeLabel(readableTimeText(from: activeLabel)) > baselineSeconds {
                 return true
             }
         }

@@ -16,8 +16,12 @@ struct PreferencesView: View {
     @AppStorage("ocrEnabled") private var ocrEnabled: Bool = false
     @AppStorage("autoOCROnSmartPause") private var autoOCROnSmartPause: Bool = true
     @AppStorage("ocrLanguage") private var ocrLanguage: String = "en-US"
+    @AppStorage("ocrOverlayShowText") private var ocrOverlayShowText: Bool = false
+    @AppStorage("ocrOverlayShowBoxes") private var ocrOverlayShowBoxes: Bool = false
     @AppStorage("defaultExportFormat") private var defaultExportFormat: String = "PNG"
     @AppStorage("defaultJPEGQuality") private var defaultJPEGQuality: Double = 0.8
+    @AppStorage("use24HourClock") private var use24HourClock: Bool = false
+    @AppStorage("showSuccessAlerts") private var showSuccessAlerts: Bool = false
     
     private var ramBufferSize: BufferSizePreset {
         get { BufferSizePreset(rawValue: ramBufferSizeRaw) ?? .medium }
@@ -55,6 +59,7 @@ struct PreferencesView: View {
                         Task {
                             await appState.bufferManager.setMaxBufferDuration(TimeInterval(newValue * 60))
                         }
+                        appState.streamManager.updateLiveBufferSettingsFromPreferences()
                     }
                 }
                 
@@ -77,6 +82,10 @@ struct PreferencesView: View {
                             // No direct action needed here, just stored for use
                         }
                 }
+
+                Section("Display") {
+                    Toggle("Use 24-hour time", isOn: $use24HourClock)
+                }
             }
             .tabItem {
                 Label("General", systemImage: "gearshape")
@@ -89,6 +98,9 @@ struct PreferencesView: View {
                         .onChange(of: ocrEnabled) { _, newValue in
                             appState.ocrEngine.isEnabled = newValue
                         }
+
+                    Toggle("Show OCR Text Overlay", isOn: $ocrOverlayShowText)
+                    Toggle("Show OCR Bounding Boxes", isOn: $ocrOverlayShowBoxes)
                     
                     Picker("Recognition Level", selection: Binding(
                         get: { appState.ocrEngine.recognitionLevel },
@@ -155,6 +167,10 @@ struct PreferencesView: View {
                             .font(.caption)
                     }
                 }
+
+                Section("Export Alerts") {
+                    Toggle("Show success alerts", isOn: $showSuccessAlerts)
+                }
             }
             .tabItem {
                 Label("Export", systemImage: "square.and.arrow.down")
@@ -169,7 +185,7 @@ struct PreferencesView: View {
                         ShortcutRow(name: "Forward 10s", shortcut: "⌘→")
                         ShortcutRow(name: "Frame Backward", shortcut: "←")
                         ShortcutRow(name: "Frame Forward", shortcut: "→")
-                        ShortcutRow(name: "Smart Pause", shortcut: "⌘S")
+                        ShortcutRow(name: "Smart Pause", shortcut: "⌘Space, ⌘S")
                         ShortcutRow(name: "Paste Stream URL", shortcut: "⌘⇧N")
                         ShortcutRow(name: "Toggle Fullscreen", shortcut: "⌘⌃F")
                     }

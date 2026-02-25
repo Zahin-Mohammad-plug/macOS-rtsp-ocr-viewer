@@ -96,6 +96,7 @@ class AppState: ObservableObject {
     )
 
     private var cancellables = Set<AnyCancellable>()
+    private var statsUpdateTimer: Timer?
 
     init() {
         // Link stream manager to database and other managers
@@ -132,9 +133,16 @@ class AppState: ObservableObject {
         // Update stats periodically
         startStatsUpdateTimer()
     }
+
+    deinit {
+        statsUpdateTimer?.invalidate()
+        statsUpdateTimer = nil
+        performanceMonitor.stopMonitoring()
+    }
     
     private func startStatsUpdateTimer() {
-        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        statsUpdateTimer?.invalidate()
+        statsUpdateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task {
                 await self.updateStats()

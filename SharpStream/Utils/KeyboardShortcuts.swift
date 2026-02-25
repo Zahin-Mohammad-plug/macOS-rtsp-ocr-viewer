@@ -40,6 +40,7 @@ class KeyboardShortcuts: ObservableObject {
             Shortcut(action: "decreaseSpeed", key: "-", modifiers: ["command"]),
             Shortcut(action: "increaseSpeed", key: "=", modifiers: ["command"]),
             Shortcut(action: "smartPause", key: "s", modifiers: ["command"]),
+            Shortcut(action: "smartPause", key: "space", modifiers: ["command"]),
             Shortcut(action: "frameBackward", key: "left", modifiers: []),
             Shortcut(action: "frameForward", key: "right", modifiers: []),
         ]

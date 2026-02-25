@@ -44,9 +44,7 @@ class MPVVideoNSView: NSView {
         }
     }
     
-    private var layoutUpdateTimer: Timer?
     private var windowObserver: NSObjectProtocol?
-    private var windowResizeObserver: NSObjectProtocol?
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -59,11 +57,7 @@ class MPVVideoNSView: NSView {
     }
     
     deinit {
-        layoutUpdateTimer?.invalidate()
         if let observer = windowObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = windowResizeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -92,7 +86,6 @@ class MPVVideoNSView: NSView {
             return
         }
         guard bounds.width > 1, bounds.height > 1 else {
-            scheduleLayoutUpdate()
             return
         }
         
@@ -101,10 +94,8 @@ class MPVVideoNSView: NSView {
         // For Metal/Vulkan (gpu-next), we pass the CAMetalLayer pointer
         // For Cocoa (libmpv), we pass the NSView pointer
         if let metalLayer = layer as? CAMetalLayer {
-            guard updateMetalLayerSize(force: true), metalLayer.drawableSize.width > 1, metalLayer.drawableSize.height > 1 else {
-                scheduleLayoutUpdate()
-                return
-            }
+            _ = updateMetalLayerSize(force: true)
+            guard metalLayer.drawableSize.width > 1, metalLayer.drawableSize.height > 1 else { return }
             // Use Metal layer for gpu-next rendering (like demo)
             player.setWindowID(metalLayer)
         } else {
@@ -116,26 +107,20 @@ class MPVVideoNSView: NSView {
     
     override func layout() {
         super.layout()
-        
-        // Cancel pending update
-        layoutUpdateTimer?.invalidate()
-        
-        // Debounce rapid updates during window movement
-        layoutUpdateTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
-            self?.updateMetalLayerSize()
-            self?.setupRendering()
-        }
+        layer?.frame = bounds
+        _ = updateMetalLayerSize(force: true)
+        setupRendering()
     }
     
     @discardableResult
     private func updateMetalLayerSize(force: Bool = false) -> Bool {
         guard let metalLayer = layer as? CAMetalLayer,
-              bounds.width > 0 && bounds.height > 0,
-              window != nil else {
+              bounds.width > 0 && bounds.height > 0 else {
             return false
         }
-        
-        let scale = metalLayer.contentsScale
+
+        let scale = window?.screen?.backingScaleFactor ?? metalLayer.contentsScale
+        metalLayer.contentsScale = max(scale, 1.0)
         let newDrawableSize = CGSize(
             width: max(1, bounds.width * scale),
             height: max(1, bounds.height * scale)
@@ -162,27 +147,31 @@ class MPVVideoNSView: NSView {
             }
             
             // Ensure the drawable is sized before mpv initialization.
+            layer?.frame = bounds
             _ = updateMetalLayerSize(force: true)
             setupRendering()
             
             // Observe window dragging
-            observeWindowDragging()
+            observeWindowMovement(window: window)
         } else {
             // View removed from window, clean up observers
             if let observer = windowObserver {
                 NotificationCenter.default.removeObserver(observer)
                 windowObserver = nil
             }
-            if let observer = windowResizeObserver {
-                NotificationCenter.default.removeObserver(observer)
-                windowResizeObserver = nil
-            }
         }
     }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        if let metalLayer = layer as? CAMetalLayer {
+            metalLayer.contentsScale = window?.screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1.0
+        }
+        _ = updateMetalLayerSize(force: true)
+        setupRendering()
+    }
     
-    private func observeWindowDragging() {
-        guard let window = window else { return }
-        
+    private func observeWindowMovement(window: NSWindow) {
         // Remove existing observer if any
         if let observer = windowObserver {
             NotificationCenter.default.removeObserver(observer)
@@ -194,24 +183,7 @@ class MPVVideoNSView: NSView {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            // Window moved - debounce layout update
-            self?.scheduleLayoutUpdate()
-        }
-        
-        // Also observe window resize
-        windowResizeObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            self?.scheduleLayoutUpdate()
-        }
-    }
-    
-    private func scheduleLayoutUpdate() {
-        layoutUpdateTimer?.invalidate()
-        layoutUpdateTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
-            self?.updateMetalLayerSize()
+            // Keep rendering surface in sync when moving between displays.
             self?.setupRendering()
         }
     }
