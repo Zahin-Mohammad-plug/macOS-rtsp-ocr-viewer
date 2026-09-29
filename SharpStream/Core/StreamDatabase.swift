@@ -104,6 +104,7 @@ class StreamDatabase {
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw DatabaseError.prepareFailed
         }
+        defer { sqlite3_finalize(statement) }
         
         bindText(stream.id.uuidString, at: 1, to: statement)
         bindText(stream.name, at: 2, to: statement)
@@ -120,7 +121,6 @@ class StreamDatabase {
             throw DatabaseError.executionFailed
         }
         
-        sqlite3_finalize(statement)
     }
     
     func getAllStreams() -> [SavedStream] {
@@ -198,6 +198,7 @@ class StreamDatabase {
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw DatabaseError.prepareFailed
         }
+        defer { sqlite3_finalize(statement) }
         
         bindText(id.uuidString, at: 1, to: statement)
         
@@ -205,7 +206,6 @@ class StreamDatabase {
             throw DatabaseError.executionFailed
         }
         
-        sqlite3_finalize(statement)
     }
     
     func updateLastUsed(streamID: UUID, date: Date) throws {
@@ -215,6 +215,7 @@ class StreamDatabase {
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw DatabaseError.prepareFailed
         }
+        defer { sqlite3_finalize(statement) }
         
         sqlite3_bind_double(statement, 1, date.timeIntervalSince1970)
         bindText(streamID.uuidString, at: 2, to: statement)
@@ -223,7 +224,6 @@ class StreamDatabase {
             throw DatabaseError.executionFailed
         }
         
-        sqlite3_finalize(statement)
     }
     
     private func parseStream(from statement: OpaquePointer?) -> SavedStream? {
@@ -335,8 +335,14 @@ class StreamDatabase {
     }
 }
 
-enum DatabaseError: Error {
+enum DatabaseError: LocalizedError {
     case prepareFailed
     case executionFailed
-    case notFound
+
+    var errorDescription: String? {
+        switch self {
+        case .prepareFailed: return "The stream library couldn't prepare the database query."
+        case .executionFailed: return "The stream library couldn't save the change."
+        }
+    }
 }

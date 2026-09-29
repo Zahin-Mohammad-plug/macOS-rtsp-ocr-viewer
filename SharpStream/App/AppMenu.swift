@@ -37,6 +37,8 @@ struct AppMenu: Commands {
             .keyboardShortcut("v", modifiers: [.command, .shift])
 
             Menu("Open Recent") {
+                // Depend on the library revision so this list rebuilds after edits.
+                let _ = appState.libraryRevision
                 let recents = appState.streamDatabase.getRecentStreams(limit: 10)
                 if recents.isEmpty {
                     Text("No Recent Streams")
@@ -55,6 +57,7 @@ struct AppMenu: Commands {
             }
 
             Menu("Saved Streams") {
+                let _ = appState.libraryRevision
                 let saved = appState.streamDatabase.getAllStreams()
                 if saved.isEmpty {
                     Text("No Saved Streams")

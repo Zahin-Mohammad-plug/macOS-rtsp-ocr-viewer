@@ -34,6 +34,8 @@ struct StreamConfigurationView: View {
                 TextField("Stream URL", text: $url)
                     .accessibilityIdentifier("streamURLField")
                     .onChange(of: url) { _, _ in
+                        // A previous test result doesn't apply to an edited URL.
+                        connectionTestResult = nil
                         validate()
                     }
                 
@@ -102,12 +104,16 @@ struct StreamConfigurationView: View {
             return
         }
         
-        let protocolType = StreamProtocol.detect(from: url)
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let savedStream = SavedStream(
             id: stream?.id ?? UUID(),
-            name: name,
-            url: url,
-            protocolType: protocolType
+            name: trimmedName.isEmpty ? AppState.defaultName(for: trimmedURL) : trimmedName,
+            url: trimmedURL,
+            protocolType: StreamProtocol.detect(from: trimmedURL),
+            // Editing must not reset when the stream was added or last used.
+            createdAt: stream?.createdAt ?? Date(),
+            lastUsed: stream?.lastUsed
         )
         
         onSave(savedStream)

@@ -24,6 +24,7 @@ struct PreferencesView: View {
     @AppStorage(UserDefaultsKey.defaultExportFormat) private var defaultExportFormat: String = "PNG"
     @AppStorage(UserDefaultsKey.defaultJPEGQuality) private var defaultJPEGQuality: Double = 0.8
     @AppStorage(UserDefaultsKey.use24HourClock) private var use24HourClock: Bool = false
+    @AppStorage(FileAccessStore.quickSaveFolderPathKey) private var quickSaveFolderPath: String = ""
 
     var body: some View {
         TabView {
@@ -79,7 +80,6 @@ struct PreferencesView: View {
                     Toggle("Language correction", isOn: $ocrLanguageCorrection)
                         .help("Better for sentences; turn off for plates, codes and IDs.")
                 }
-                .disabled(false)
 
                 Section("Overlay") {
                     Toggle("Outline recognized text", isOn: $ocrOverlayShowBoxes)
@@ -91,6 +91,21 @@ struct PreferencesView: View {
             .tabItem { Label("Text", systemImage: "text.viewfinder") }
 
             Form {
+                Section("Quick Save") {
+                    LabeledContent("Folder") {
+                        HStack {
+                            Text(quickSaveFolderPath.isEmpty ? "Downloads" : (quickSaveFolderPath as NSString).abbreviatingWithTildeInPath)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                            Button("Choose…") { appState.chooseQuickSaveFolder() }
+                            if !quickSaveFolderPath.isEmpty {
+                                Button("Reset") { appState.resetQuickSaveFolder() }
+                            }
+                        }
+                    }
+                }
+
                 Section("Frame Export") {
                     Picker("Quick save format", selection: $defaultExportFormat) {
                         Text("PNG").tag("PNG")
@@ -114,8 +129,8 @@ struct PreferencesView: View {
             Form {
                 Section("Keyboard Shortcuts") {
                     ShortcutRow(name: "Play / Pause", shortcut: "Space")
-                    ShortcutRow(name: "Seek −5 s / +5 s", shortcut: "← / →")
-                    ShortcutRow(name: "Seek −10 s / +10 s", shortcut: "⌘← / ⌘→")
+                    ShortcutRow(name: "Seek −5 s / +5 s (paused file: step a frame)", shortcut: "← / →")
+                    ShortcutRow(name: "Seek −10 s / +10 s", shortcut: "⌘← / ⌘→  or  ⌥⌘← / ⌥⌘→")
                     ShortcutRow(name: "Previous / next frame", shortcut: ", / .")
                     ShortcutRow(name: "Smart Pause", shortcut: "⌘S")
                     ShortcutRow(name: "Recognize Text", shortcut: "⌘R")

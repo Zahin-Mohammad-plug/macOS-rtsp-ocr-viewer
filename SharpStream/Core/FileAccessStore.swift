@@ -77,6 +77,47 @@ final class FileAccessStore {
         activeURL = nil
     }
 
+    // MARK: - Quick Save folder
+
+    static let quickSaveFolderPathKey = "quickSaveFolderPath"
+    private let quickSaveBookmarkKey = "quickSaveFolderBookmark"
+
+    /// Remember a folder the user picked (NSOpenPanel grants access to it now;
+    /// the bookmark keeps it across launches).
+    func rememberQuickSaveFolder(_ url: URL) throws {
+        let data = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+        if isPersistenceEnabled {
+            defaults.set(data, forKey: quickSaveBookmarkKey)
+            defaults.set(url.path, forKey: Self.quickSaveFolderPathKey)
+        }
+    }
+
+    func resetQuickSaveFolder() {
+        defaults.removeObject(forKey: quickSaveBookmarkKey)
+        defaults.removeObject(forKey: Self.quickSaveFolderPathKey)
+    }
+
+    /// Run `body` with write access to the Quick Save folder: the chosen folder
+    /// if its bookmark still resolves, otherwise Downloads (always writable for
+    /// this sandboxed app).
+    func withQuickSaveFolder<T>(_ body: (URL) throws -> T) rethrows -> T {
+        if let data = defaults.data(forKey: quickSaveBookmarkKey) {
+            var isStale = false
+            if let folder = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope], relativeTo: nil, bookmarkDataIsStale: &isStale),
+               folder.startAccessingSecurityScopedResource() {
+                defer { folder.stopAccessingSecurityScopedResource() }
+                if isStale { try? rememberQuickSaveFolder(folder) }
+                return try body(folder)
+            }
+        }
+        return try body(Self.downloadsFolder)
+    }
+
+    static var downloadsFolder: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
     private var storedBookmarks: [String: Data] {
         defaults.dictionary(forKey: key) as? [String: Data] ?? [:]
     }

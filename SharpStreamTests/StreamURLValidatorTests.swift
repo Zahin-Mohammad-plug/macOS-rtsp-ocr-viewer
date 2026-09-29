@@ -148,6 +148,18 @@ final class StreamURLValidatorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(rtspEntry?.useCount ?? 0, 2)
     }
 
+    func testSchemesAreCaseInsensitiveAndRTSPSIsSupported() {
+        XCTAssertTrue(StreamURLValidator.validate("RTSP://camera.local:8554/cam").isValid)
+        XCTAssertTrue(StreamURLValidator.validate("rtsps://camera.local:322/cam").isValid)
+        XCTAssertEqual(StreamProtocol.detect(from: "rtsps://camera.local/cam"), .rtsp)
+        XCTAssertTrue(StreamURLValidator.validate("  rtsp://camera.local/cam\n").isValid)
+    }
+
+    func testUnknownSchemeIsNotGuessedAsHLS() {
+        XCTAssertEqual(StreamProtocol.detect(from: "foohls://example.com/live"), .unknown)
+        XCTAssertFalse(StreamURLValidator.validate("foohls://example.com/live").isValid)
+    }
+
     func testSessionRecoveryLifecycle() throws {
         let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("recovery-tests-\(UUID().uuidString)", isDirectory: true)
         let fileURL = tempRoot.appendingPathComponent("session_recovery.json")

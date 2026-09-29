@@ -49,7 +49,7 @@ enum StreamProtocol: String, Codable, CaseIterable {
         let looksLikeHLS = lowerTrimmed.contains(".m3u8") || lowerTrimmed.contains("hls")
         
         switch scheme {
-        case "rtsp":
+        case "rtsp", "rtsps":
             return .rtsp
         case "srt":
             return .srt
@@ -62,10 +62,6 @@ enum StreamProtocol: String, Codable, CaseIterable {
         case "file":
             return .file
         default:
-            // Check if it's HLS by extension or path
-            if looksLikeHLS {
-                return .hls
-            }
             return .unknown
         }
     }

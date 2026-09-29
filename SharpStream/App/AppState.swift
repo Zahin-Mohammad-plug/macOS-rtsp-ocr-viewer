@@ -86,6 +86,8 @@ final class AppState: ObservableObject {
     @Published private(set) var hasPlayer = false
     @Published private(set) var currentSeekMode: SeekMode = .disabled
     @Published private(set) var hasCurrentStream = false
+    /// Bumped when saved/recent streams change so menus rebuild their lists.
+    @Published private(set) var libraryRevision = 0
     @Published var showOCRInspector: Bool {
         didSet { UserDefaults.standard.set(showOCRInspector, forKey: UserDefaultsKey.showOCRInspector) }
     }
@@ -123,6 +125,7 @@ final class AppState: ObservableObject {
     private var keyMonitor: Any?
     private var playerWindows = NSHashTable<NSWindow>.weakObjects()
     private var didCheckRecovery = false
+    private var ocrRunsInFlight = 0
 
     var player: MPVPlayerWrapper? { streamManager.player }
 
@@ -155,6 +158,12 @@ final class AppState: ObservableObject {
             .map { $0 != nil }
             .removeDuplicates()
             .sink { [weak self] value in self?.hasCurrentStream = value }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .savedStreamsUpdated)
+            .merge(with: NotificationCenter.default.publisher(for: .recentStreamsUpdated))
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.libraryRevision += 1 }
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
@@ -250,7 +259,6 @@ final class AppState: ObservableObject {
     private func updateStats() {
         var stats = streamManager.streamStats
         stats.cpuUsage = performanceMonitor.cpuUsage
-        stats.gpuUsage = nil
         stats.memoryPressure = performanceMonitor.memoryPressure
         stats.currentFocusScore = focusScorer.getCurrentScore()
         stats.focusScoringFPS = focusScorer.getScoringFPS()
@@ -269,6 +277,7 @@ final class AppState: ObservableObject {
 
     func connect(to stream: SavedStream) {
         var stream = stream
+        stream.url = stream.url.trimmingCharacters(in: .whitespacesAndNewlines)
         if StreamProtocol.detect(from: stream.url) == .file {
             stream.url = fileAccess.beginAccess(for: stream.url)
         } else {
@@ -385,6 +394,8 @@ final class AppState: ObservableObject {
 
     func seek(by offset: TimeInterval) {
         guard let player else { return }
+        // The frozen frame no longer matches the video once it moves.
+        clearAnalysis()
         switch seekMode {
         case .absolute:
             let target = max(0, min(player.duration, player.precisePlaybackTime + offset))
@@ -409,6 +420,7 @@ final class AppState: ObservableObject {
 
     func seek(toTimelinePosition position: TimeInterval, exact: Bool) {
         guard let player else { return }
+        clearAnalysis()
         switch seekMode {
         case .absolute:
             player.seek(to: max(0, min(position, player.duration)), exact: exact)
@@ -421,10 +433,12 @@ final class AppState: ObservableObject {
 
     func stepFrame(backward: Bool) {
         guard seekMode == .absolute else { return }
+        clearAnalysis()
         player?.stepFrame(backward: backward)
     }
 
     func jumpToLive() {
+        clearAnalysis()
         if !streamManager.seekToLiveEdge() {
             showStatus("Live edge unavailable.")
         }
@@ -476,6 +490,7 @@ final class AppState: ObservableObject {
 
     /// Pause and recognize text in the frame on screen (or the frozen analyzed frame).
     func recognizeText() {
+        guard !isRecognizingText else { return }
         Task { _ = await recognizeTextNow() }
     }
 
@@ -494,8 +509,12 @@ final class AppState: ObservableObject {
 
     @discardableResult
     private func runOCR(on pixelBuffer: CVPixelBuffer, announce: Bool) async -> OCRResult? {
+        ocrRunsInFlight += 1
         isRecognizingText = true
-        defer { isRecognizingText = false }
+        defer {
+            ocrRunsInFlight -= 1
+            isRecognizingText = ocrRunsInFlight > 0
+        }
         let result = await ocrEngine.recognizeText(in: pixelBuffer)
         // The user may have resumed playback while OCR was running.
         guard let frame = analyzedFrame, frame.pixelBuffer === pixelBuffer else { return result }
@@ -507,7 +526,7 @@ final class AppState: ObservableObject {
             } else if announce {
                 showStatus("Recognized \(result.lines.count) line(s).")
             }
-        } else {
+        } else if announce {
             showStatus("No text found in this frame.")
         }
         return result
@@ -522,7 +541,10 @@ final class AppState: ObservableObject {
         if pause { player.pause() }
         let time = player.precisePlaybackTime
         guard let pixelBuffer = await player.captureFrame() else { return nil }
-        if pause { present(pixelBuffer, playbackTime: time) }
+        // Playback may have resumed (or the player changed) during the capture.
+        if pause, self.player === player, !player.isPlaying {
+            present(pixelBuffer, playbackTime: time)
+        }
         return pixelBuffer
     }
 
@@ -589,13 +611,15 @@ final class AppState: ObservableObject {
                 return
             }
             let format = defaultExportFormat
-            let directory = lastExportDirectory
-            let url = directory.appendingPathComponent("frame-\(Self.timestampString()).\(format.fileExtension)")
             do {
-                try exportManager.saveFrame(frame, to: url, format: format)
-                showStatus("Saved \(url.lastPathComponent) to \(directory.lastPathComponent)")
+                let url = try fileAccess.withQuickSaveFolder { folder -> URL in
+                    let url = Self.uniqueURL(in: folder, base: "frame-\(Self.timestampString())", ext: format.fileExtension)
+                    try exportManager.saveFrame(frame, to: url, format: format)
+                    return url
+                }
+                showStatus("Saved \(url.lastPathComponent) to \(url.deletingLastPathComponent().lastPathComponent)")
             } catch {
-                showStatus("Quick save failed: \(error.localizedDescription)", isError: true)
+                showStatus("Quick save failed: \(error.localizedDescription). Choose a folder in Settings › Export.", isError: true)
             }
         }
     }
@@ -648,13 +672,43 @@ final class AppState: ObservableObject {
         return .png
     }
 
+    /// Initial folder for save panels (panels can open anywhere; this is only a
+    /// starting location, not a grant of access).
     private var lastExportDirectory: URL {
         if let path = UserDefaults.standard.string(forKey: UserDefaultsKey.lastFrameExportDirectory),
            !path.isEmpty, FileManager.default.fileExists(atPath: path) {
             return URL(fileURLWithPath: path, isDirectory: true)
         }
-        return FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
+        return FileAccessStore.downloadsFolder
+    }
+
+    func chooseQuickSaveFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        panel.message = "Choose where Quick Save puts frames"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try fileAccess.rememberQuickSaveFolder(url)
+        } catch {
+            showStatus("Couldn't use that folder: \(error.localizedDescription)", isError: true)
+        }
+    }
+
+    func resetQuickSaveFolder() {
+        fileAccess.resetQuickSaveFolder()
+    }
+
+    private static func uniqueURL(in folder: URL, base: String, ext: String) -> URL {
+        var url = folder.appendingPathComponent("\(base).\(ext)")
+        var index = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = folder.appendingPathComponent("\(base)-\(index).\(ext)")
+            index += 1
+        }
+        return url
     }
 
     private func rememberExportDirectory(_ fileURL: URL) {
@@ -702,6 +756,11 @@ final class AppState: ObservableObject {
         }
 
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        // Punctuation by character so it works on non-US layouts.
+        if modifiers.isEmpty, let characters = event.charactersIgnoringModifiers {
+            if characters == "," { stepFrame(backward: true); return true }
+            if characters == "." { stepFrame(backward: false); return true }
+        }
         switch (event.keyCode, modifiers) {
         case (49, []): // space
             togglePlayPause()
@@ -709,10 +768,6 @@ final class AppState: ObservableObject {
             seekMode == .absolute && !(player?.isPlaying ?? true) ? stepFrame(backward: true) : seek(by: -5)
         case (124, []): // right
             seekMode == .absolute && !(player?.isPlaying ?? true) ? stepFrame(backward: false) : seek(by: 5)
-        case (43, []): // ,
-            stepFrame(backward: true)
-        case (47, []): // .
-            stepFrame(backward: false)
         case (123, [.command]):
             seek(by: -10)
         case (124, [.command]):

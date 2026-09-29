@@ -80,6 +80,8 @@ final class StreamManager: ObservableObject {
     private var connectionTimeoutTimer: Timer?
     private var metadataTimer: Timer?
     private var liveStateTimer: Timer?
+    private var stableTimer: Timer?
+    private var lastRecoveryRefresh = Date.distantPast
     private var transportMetricsSampler = TransportMetricsSampler()
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 10
@@ -184,7 +186,7 @@ final class StreamManager: ObservableObject {
 
         // The load is queued until the video view attaches its surface.
         connectionLifecycle = .loadCommandIssued
-        newPlayer.loadStream(url: stream.url)
+        newPlayer.loadStream(url: stream.url, keepOpenAtEnd: stream.protocolType == .file)
 
         connectionTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -275,6 +277,8 @@ final class StreamManager: ObservableObject {
         metadataTimer = nil
         liveStateTimer?.invalidate()
         liveStateTimer = nil
+        stableTimer?.invalidate()
+        stableTimer = nil
     }
 
     // MARK: - Player events
@@ -306,8 +310,10 @@ final class StreamManager: ObservableObject {
                     handleConnectionFailure("Stream failed to open\(detail)", allowReconnect: true)
                 }
             } else if connectionState == .connected {
-                if reason == .eof, isFile {
-                    // keep-open normally prevents this; treat as a finished file.
+                if reason == .eof, isFile || seekMode == .absolute {
+                    // A file or VOD stream (finite duration) finished normally;
+                    // reconnecting would just restart it in a loop.
+                    player?.pause()
                     return
                 }
                 handleConnectionFailure(reason == .eof ? "Stream ended" : "Playback error\(detail)", allowReconnect: true)
@@ -327,13 +333,24 @@ final class StreamManager: ObservableObject {
         streamStats.connectionStatus = .connected
         streamStats.streamHealth = .good
         streamStats.streamHealthReason = "Connected"
-        reconnectAttempts = 0
         reconnectAttempt = 0
-        reconnectDelay = 1.0
         connectionLifecycle = .fileLoaded
+        // Only forgive past failures once the stream has stayed up for a while;
+        // resetting on every load let a connect-then-drop source retry forever.
+        stableTimer?.invalidate()
+        stableTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.connectionState == .connected else { return }
+                self.reconnectAttempts = 0
+                self.reconnectDelay = 1.0
+            }
+        }
 
         guard let player else { return }
         seekMode = Self.classifySeekMode(protocolType: currentStream?.protocolType ?? .unknown, duration: player.duration)
+        // Finite media holds its last frame at the end; live sources must end
+        // so a dropped connection triggers a reconnect.
+        player.setKeepOpenAtEnd(seekMode == .absolute)
         applyLiveBufferSettingsIfNeeded(for: currentStream, player: player)
         player.play()
         resetLiveDVRState()
@@ -341,10 +358,16 @@ final class StreamManager: ObservableObject {
         applyPendingLiveResumeIfNeeded()
 
         if let stream = currentStream {
-            try? database?.updateLastUsed(streamID: stream.id, date: Date())
-            database?.addRecentStream(url: stream.url)
-            NotificationCenter.default.post(name: .recentStreamsUpdated, object: nil)
+            // Reconnects are the same session: don't count them as new uses.
+            if !lastConnectWasReconnect {
+                if let saved = database?.getStream(byURL: stream.url) {
+                    try? database?.updateLastUsed(streamID: saved.id, date: Date())
+                }
+                database?.addRecentStream(url: stream.url)
+                NotificationCenter.default.post(name: .recentStreamsUpdated, object: nil)
+            }
             recoveryStore?.markActive(streamURL: stream.url, streamName: stream.name)
+            lastRecoveryRefresh = Date()
         }
     }
 
@@ -392,6 +415,12 @@ final class StreamManager: ObservableObject {
     }
 
     private func sampleTransportMetrics(from player: MPVPlayerWrapper) {
+        // Keep the crash-recovery marker fresh so long sessions stay resumable.
+        if connectionState == .connected, Date().timeIntervalSince(lastRecoveryRefresh) > 60,
+           let stream = currentStream {
+            recoveryStore?.markActive(streamURL: stream.url, streamName: stream.name)
+            lastRecoveryRefresh = Date()
+        }
         let snapshot = player.getTransportMetricsSnapshot()
         updateStats(
             bitrate: snapshot.bitrate,
@@ -640,8 +669,10 @@ final class StreamManager: ObservableObject {
     }
 
     private func captureLiveResumeStateIfNeeded() {
-        guard seekMode == .liveBuffered, let player else { return }
-        pendingLiveResume = LiveResumeState(lagSeconds: liveDVRState.lagSeconds, shouldPlay: player.isPlaying)
+        // Keep the state from the first failure of an outage; later attempts'
+        // fresh players never reflect what the user chose.
+        guard pendingLiveResume == nil, seekMode == .liveBuffered, let player else { return }
+        pendingLiveResume = LiveResumeState(lagSeconds: liveDVRState.lagSeconds, shouldPlay: player.wantsPlayback)
     }
 
     /// After a reconnect the old cache is gone; only restore the paused state.
@@ -679,8 +710,10 @@ final class StreamManager: ObservableObject {
         let window = liveDVRState.windowSeconds
         guard window > 0 else { return false }
         let clamped = max(0, min(position, window))
-        if let metrics = player.liveCacheMetrics(), let start = metrics.windowStartTime, start.isFinite {
-            return player.seek(to: start + clamped, exact: false)
+        // Anchor on the live edge: mpv's cache can hold more than the displayed
+        // window, so its oldest timestamp is not where the slider starts.
+        if let metrics = player.liveCacheMetrics(), let edge = metrics.liveEdgeTime, edge.isFinite {
+            return player.seek(to: max(0, edge - (window - clamped)), exact: false)
         }
         let targetLag = window - clamped
         return player.seek(offset: liveDVRState.lagSeconds - targetLag, exact: false)

@@ -25,12 +25,10 @@ enum ExportFormat: Equatable {
 
 enum ExportError: LocalizedError {
     case conversionFailed
-    case writeFailed
 
     var errorDescription: String? {
         switch self {
         case .conversionFailed: return "The frame could not be converted to an image."
-        case .writeFailed: return "The file could not be written."
         }
     }
 }
@@ -140,10 +138,7 @@ final class ExportManager {
             data = rep.representation(using: .jpeg, properties: [.compressionFactor: quality])
         }
         guard let data else { throw ExportError.conversionFailed }
-        do {
-            try data.write(to: url, options: .atomic)
-        } catch {
-            throw ExportError.writeFailed
-        }
+        // Surface the real reason (permissions, disk full, ...) to the user.
+        try data.write(to: url, options: .atomic)
     }
 }

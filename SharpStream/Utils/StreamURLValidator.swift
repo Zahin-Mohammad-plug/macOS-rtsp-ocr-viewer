@@ -29,32 +29,23 @@ struct StreamURLValidator {
         // Protocol-specific validation
         switch protocolType {
         case .rtsp:
-            if !trimmed.hasPrefix("rtsp://") {
-                return .invalid("RTSP URL must start with 'rtsp://'")
-            }
             if url?.host == nil {
                 return .invalid("RTSP URL must include a host address")
             }
             
         case .srt:
-            if !trimmed.hasPrefix("srt://") {
-                return .invalid("SRT URL must start with 'srt://'")
-            }
             if url?.host == nil {
                 return .invalid("SRT URL must include a host address")
             }
             
         case .udp:
-            if !trimmed.hasPrefix("udp://") {
-                return .invalid("UDP URL must start with 'udp://'")
-            }
             if url?.host == nil {
                 return .invalid("UDP URL must include a host address")
             }
             
         case .hls:
-            if !trimmed.contains(".m3u8") && !trimmed.hasPrefix("http://") && !trimmed.hasPrefix("https://") {
-                return .invalid("HLS URL should be an HTTP/HTTPS URL with .m3u8 extension")
+            if url?.host == nil {
+                return .invalid("HLS URL must include a host address")
             }
             
         case .http, .https:

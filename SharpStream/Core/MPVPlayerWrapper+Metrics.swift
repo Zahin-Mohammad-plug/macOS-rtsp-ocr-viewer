@@ -76,10 +76,10 @@ extension MPVPlayerWrapper {
         let metadata = getMetadata()
         let cacheMetrics = liveCacheMetrics()
         let resolvedRxRateBps: Int?
-        if let rawInputRateBps = cacheMetrics?.rawInputRateBps, rawInputRateBps > 0 {
+        // Report only what was actually received. (Substituting the media
+        // bitrate hid stalls: it keeps its last value when no data arrives.)
+        if let rawInputRateBps = cacheMetrics?.rawInputRateBps, rawInputRateBps >= 0 {
             resolvedRxRateBps = rawInputRateBps
-        } else if let bitrate = metadata.bitrate, bitrate > 0 {
-            resolvedRxRateBps = max(1, bitrate / 8)
         } else {
             resolvedRxRateBps = nil
         }

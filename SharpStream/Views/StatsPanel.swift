@@ -50,8 +50,8 @@ struct StatsPanel: View {
                     valueIdentifier: "statBufferLevelValue"
                 )
                 StatRow(
-                    label: "Jitter (Proxy)",
-                    value: stats.jitterProxyMs.map { String(format: "%.0f ms", $0) } ?? "N/A",
+                    label: "Jitter Index",
+                    value: stats.jitterProxyMs.map { String(format: "%.0f", $0) } ?? "N/A",
                     valueIdentifier: "statJitterProxyValue"
                 )
                 StatRow(
@@ -79,11 +79,6 @@ struct StatsPanel: View {
                     label: "Codec",
                     value: stats.codecName?.uppercased() ?? "N/A",
                     valueIdentifier: "statCodecValue"
-                )
-                StatRow(
-                    label: "Keyframe Interval",
-                    value: stats.keyframeIntervalSeconds.map { String(format: "%.2f s", $0) } ?? "N/A",
-                    valueIdentifier: "statKeyframeIntervalValue"
                 )
 
                 Divider()

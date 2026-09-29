@@ -140,14 +140,20 @@ final class OCREngine: ObservableObject {
         try handler.perform([request])
 
         let observations = request.results ?? []
-        // Reading order: top-to-bottom, then left-to-right.
-        let sorted = observations.sorted { lhs, rhs in
-            let dy = lhs.boundingBox.midY - rhs.boundingBox.midY
-            if abs(dy) > min(lhs.boundingBox.height, rhs.boundingBox.height) * 0.5 {
-                return dy > 0
+        // Reading order: group observations into rows (vertical overlap), rows
+        // top-to-bottom, each row left-to-right. (A pairwise comparator with a
+        // tolerance isn't a strict weak ordering and can scramble dense text.)
+        var rows: [[VNRecognizedTextObservation]] = []
+        for observation in observations.sorted(by: { $0.boundingBox.midY > $1.boundingBox.midY }) {
+            if let last = rows.last?.last,
+               abs(last.boundingBox.midY - observation.boundingBox.midY)
+                < min(last.boundingBox.height, observation.boundingBox.height) * 0.5 {
+                rows[rows.count - 1].append(observation)
+            } else {
+                rows.append([observation])
             }
-            return lhs.boundingBox.minX < rhs.boundingBox.minX
         }
+        let sorted = rows.flatMap { row in row.sorted { $0.boundingBox.minX < $1.boundingBox.minX } }
 
         let lines: [OCRLine] = sorted.compactMap { observation in
             guard let candidate = observation.topCandidates(1).first else { return nil }

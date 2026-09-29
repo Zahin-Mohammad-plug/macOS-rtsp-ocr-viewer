@@ -69,6 +69,7 @@ final class MPVPlayerWrapper: ObservableObject {
     private var isInitialized = false
     private var isRenderReady = false
     private var pendingStreamURL: String?
+    private var pendingKeepOpen = false
     private var liveBufferSettings: LiveBufferSettings?
     private var rawTimePosition: TimeInterval = 0
 
@@ -121,9 +122,6 @@ final class MPVPlayerWrapper: ObservableObject {
         mpv_set_option_string(handle, "terminal", "no")
         mpv_set_option_string(handle, "msg-level", "all=warn")
         mpv_set_option_string(handle, "idle", "yes")
-        // Stay on the last frame at EOF instead of unloading the file, so files
-        // remain seekable/OCR-able when they finish.
-        mpv_set_option_string(handle, "keep-open", "yes")
         mpv_set_option_string(handle, "input-default-bindings", "no")
         mpv_set_option_string(handle, "input-vo-keyboard", "no")
         mpv_set_option_string(handle, "osc", "no")
@@ -173,7 +171,7 @@ final class MPVPlayerWrapper: ObservableObject {
         isRenderReady = true
         if let pendingURL = pendingStreamURL {
             pendingStreamURL = nil
-            loadStream(url: pendingURL)
+            loadStream(url: pendingURL, keepOpenAtEnd: pendingKeepOpen)
         }
     }
 
@@ -384,7 +382,13 @@ final class MPVPlayerWrapper: ObservableObject {
 
     /// Load a stream URL (RTSP, SRT, UDP, HLS, local file, ...). If libmpv is not
     /// initialized yet (no surface attached), the load is deferred.
-    func loadStream(url: String) {
+    ///
+    /// `keepOpenAtEnd` holds the last frame at EOF instead of ending playback,
+    /// so finished files stay seekable/OCR-able. It must be off for live
+    /// streams: there "EOF" means the source dropped (network timeout), and
+    /// holding the last frame would suppress the end-file event that drives
+    /// reconnects, leaving a frozen picture labeled LIVE.
+    func loadStream(url: String, keepOpenAtEnd: Bool = false) {
         guard mpvHandle != nil else {
             reportFailure("Player is not available")
             return
@@ -392,8 +396,10 @@ final class MPVPlayerWrapper: ObservableObject {
         guard isInitialized, isRenderReady else {
             // Without a render context mpv would disable the video track.
             pendingStreamURL = url
+            pendingKeepOpen = keepOpenAtEnd
             return
         }
+        setProperty("keep-open", keepOpenAtEnd ? "yes" : "no")
         let result = command(["loadfile", url, "replace"])
         if result < 0 {
             reportFailure("Failed to load stream: \(Self.errorString(result))")
@@ -406,14 +412,27 @@ final class MPVPlayerWrapper: ObservableObject {
         }
     }
 
+    /// Change end-of-stream behavior after load (e.g. an HTTP/HLS source that
+    /// turned out to be VOD with a finite duration).
+    func setKeepOpenAtEnd(_ keepOpen: Bool) {
+        setProperty("keep-open", keepOpen ? "yes" : "no")
+    }
+
     // MARK: - Playback control
 
+    /// Whether playback was last *requested* to run. Unlike `isPlaying`, this
+    /// isn't cleared when the stream ends or stalls, so reconnects can restore
+    /// what the user actually wanted.
+    private(set) var wantsPlayback = true
+
     func play() {
+        wantsPlayback = true
         setProperty("pause", "no")
         isPlaying = true
     }
 
     func pause() {
+        wantsPlayback = false
         setProperty("pause", "yes")
         isPlaying = false
     }
@@ -680,10 +699,6 @@ final class MPVPlayerWrapper: ObservableObject {
         }
     }
 
-    func setOptionOrProperty(_ name: String, _ value: String) {
-        setProperty(name, value)
-    }
-
     private func withCStrings<R>(_ strings: [String], _ body: (UnsafeMutablePointer<UnsafePointer<CChar>?>) -> R) -> R {
         let owned = strings.map { strdup($0) }
         defer { owned.forEach { free($0) } }
@@ -722,8 +737,9 @@ final class MPVPlayerWrapper: ObservableObject {
         guard mpvHandle != nil, let settings = liveBufferSettings else { return }
         let seconds = max(1, Int(settings.maxWindowSeconds.rounded()))
         setProperty("cache", "yes")
-        // Keep `seconds` of already-played stream behind the playhead.
         setProperty("demuxer-seekable-cache", "yes")
+        // cache-secs bounds readahead; how far back you can rewind is bounded by
+        // demuxer-max-back-bytes below (sized from bitrate for the window).
         setProperty("cache-secs", String(seconds))
         if let backBytes = settings.backBufferBytes, backBytes > 0 {
             setProperty("demuxer-max-back-bytes", String(backBytes))
