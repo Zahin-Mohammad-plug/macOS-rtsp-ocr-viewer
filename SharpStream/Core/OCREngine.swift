@@ -8,6 +8,7 @@
 import Foundation
 import Vision
 import CoreVideo
+import CoreImage
 import Combine
 
 enum OCRRecognitionLevel: String, CaseIterable {
@@ -28,6 +29,10 @@ final class OCREngine: ObservableObject {
     @Published var languages: [String] = ["en-US"]
     /// Language correction helps prose but mangles codes, plates and IDs.
     @Published var usesLanguageCorrection: Bool = false
+    /// Smallest text to look for, as a fraction of frame height (0 = Vision default).
+    @Published var minimumTextHeight: Float = OCREngine.defaultMinimumTextHeight
+
+    nonisolated static let defaultMinimumTextHeight: Float = 0.01
 
     private let processingQueue = DispatchQueue(label: "com.sharpstream.ocr", qos: .userInitiated)
 
@@ -49,7 +54,8 @@ final class OCREngine: ObservableObject {
         let configuration = (
             level: recognitionLevel.visionLevel,
             languages: normalizedLanguages(),
-            correction: usesLanguageCorrection
+            correction: usesLanguageCorrection,
+            minimumTextHeight: minimumTextHeight
         )
 
         processingQueue.async {
@@ -59,7 +65,8 @@ final class OCREngine: ObservableObject {
                     in: pixelBuffer,
                     level: configuration.level,
                     languages: configuration.languages,
-                    correction: configuration.correction
+                    correction: configuration.correction,
+                    minimumTextHeight: configuration.minimumTextHeight
                 )
                 // An unsupported/mismatched language list can yield nothing; retry
                 // once with automatic language detection.
@@ -68,7 +75,8 @@ final class OCREngine: ObservableObject {
                         in: pixelBuffer,
                         level: configuration.level,
                         languages: [],
-                        correction: configuration.correction
+                        correction: configuration.correction,
+                        minimumTextHeight: configuration.minimumTextHeight
                     )
                 }
             } catch {
@@ -86,16 +94,28 @@ final class OCREngine: ObservableObject {
             .filter { !$0.isEmpty }
     }
 
-    nonisolated private static func recognize(
+    /// Vision downsamples large inputs internally, so small print in frames
+    /// below ~1600 px tall loses detail. Measured with scripts/ocr_bench on the
+    /// test page: 1.5x raises 720p from 5 to 7 of 12 lines (14 pt -> 12 pt
+    /// smallest reliable) and makes 12 pt consistent on live 1080p frames
+    /// (9/12 -> 12/12 frames), for ~10 ms.
+    nonisolated static func upscaleFactor(forHeight height: Int) -> Double {
+        height > 0 && height < 1600 ? 1.5 : 1
+    }
+
+    /// Synchronous recognition with explicit parameters (used by the engine and
+    /// by the OCR benchmark harness in scripts/ocr_bench).
+    nonisolated static func recognize(
         in pixelBuffer: CVPixelBuffer,
         level: VNRequestTextRecognitionLevel,
         languages: [String],
-        correction: Bool
+        correction: Bool,
+        minimumTextHeight: Float
     ) throws -> OCRResult? {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = level
         request.usesLanguageCorrection = correction
-        request.minimumTextHeight = 0.01
+        request.minimumTextHeight = minimumTextHeight
         if languages.isEmpty {
             request.automaticallyDetectsLanguage = true
         } else {
@@ -103,8 +123,20 @@ final class OCREngine: ObservableObject {
         }
 
         // Frames come straight from the decoder, upright: never rotate, or the
-        // returned boxes would no longer line up with the picture.
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        // returned boxes would no longer line up with the picture. Boxes are
+        // normalized, so upscaling doesn't affect them either.
+        let factor = upscaleFactor(forHeight: CVPixelBufferGetHeight(pixelBuffer))
+        let handler: VNImageRequestHandler
+        if factor > 1 {
+            let image = CIImage(cvPixelBuffer: pixelBuffer)
+                .applyingFilter("CILanczosScaleTransform", parameters: [
+                    kCIInputScaleKey: factor,
+                    kCIInputAspectRatioKey: 1.0
+                ])
+            handler = VNImageRequestHandler(ciImage: image, orientation: .up, options: [:])
+        } else {
+            handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        }
         try handler.perform([request])
 
         let observations = request.results ?? []

@@ -156,3 +156,19 @@ Sparkle is not integrated. [SPARKLE_SETUP.md](SPARKLE_SETUP.md) describes a poss
 2. Make your change and add or update tests.
 3. Run `scripts/full_check.sh` (with `.env` configured if you touched playback, Smart Pause or OCR).
 4. Open a pull request.
+
+## OCR benchmark
+
+`scripts/ocr_bench/` compiles the app's own `OCREngine` and `SharpnessMetrics` into a command-line harness and scores images against a ground-truth file (JSON array of `{"pt": 12, "text": "five random words and 123"}`). A truth line counts as read when its number and at least 4 of its 5 words appear on one recognized line.
+
+```bash
+# Score camera frames (e.g. grabbed with ffmpeg at 4 fps) and report which frame Smart Pause's metric would pick
+scripts/ocr_bench/run.sh --truth testpage_truth.json frames/*.jpg
+
+# Synthetic renders of the test page: resolution, defocus and rotation sweeps
+scripts/ocr_bench/run.sh --truth testpage_truth.json --pdf ocr_testpage.pdf --height 1080 --blur 0,1,2,3 --rotate 72
+```
+
+Other options: `--csv`, `--min-height`, `--level fast|accurate`, `--correction`, `--languages`, `--upscale`.
+
+`SharpStreamTests/OCRBenchmarkTests` embeds the same test page and guards three findings from these runs: sharp 1080p reads every line down to 12 pt, 720p needs the engine's < 1600 px upscale to reach 12-14 pt, and the frame ranked sharpest by the Laplacian metric is the frame OCR reads best.

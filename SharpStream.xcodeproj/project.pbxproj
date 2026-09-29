@@ -19,6 +19,7 @@
 		B2A1E4A13E1110010081A008 /* MPVCacheRangeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081A10D /* MPVCacheRangeTests.swift */; };
 		B2A1E4A13E1110010081A009 /* SmartPauseQoSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081A10E /* SmartPauseQoSTests.swift */; };
 		B2A1E4A13E1110010081A00A /* FileAccessStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081A10F /* FileAccessStoreTests.swift */; };
+		B2A1E4A13E1110010081A00B /* OCRBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081A110 /* OCRBenchmarkTests.swift */; };
 		B2A1E4A13E1110010081B001 /* SharpStreamUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A1E4A13E1110010081B101 /* SharpStreamUITests.swift */; };
 /* End PBXBuildFile section */
 
@@ -54,6 +55,7 @@
 		B2A1E4A13E1110010081A10D /* MPVCacheRangeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPVCacheRangeTests.swift; sourceTree = "<group>"; };
 		B2A1E4A13E1110010081A10E /* SmartPauseQoSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartPauseQoSTests.swift; sourceTree = "<group>"; };
 		B2A1E4A13E1110010081A10F /* FileAccessStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAccessStoreTests.swift; sourceTree = "<group>"; };
+		B2A1E4A13E1110010081A110 /* OCRBenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRBenchmarkTests.swift; sourceTree = "<group>"; };
 		B2A1E4A13E1110010081B101 /* SharpStreamUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharpStreamUITests.swift; sourceTree = "<group>"; };
 		B2A1E4A13E1110010081B102 /* SharpStreamUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SharpStreamUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -129,6 +131,7 @@
 					B2A1E4A13E1110010081A10A /* StreamDatabaseTests.swift */,
 					B2A1E4A13E1110010081A102 /* StreamURLValidatorTests.swift */,
 					B2A1E4A13E1110010081A10B /* VideoLayoutMapperTests.swift */,
+					B2A1E4A13E1110010081A110 /* OCRBenchmarkTests.swift */,
 					B2A1E4A13E1110010081A10F /* FileAccessStoreTests.swift */,
 					B2A1E4A13E1110010081A10E /* SmartPauseQoSTests.swift */,
 				);
@@ -279,6 +282,7 @@
 					B2A1E4A13E1110010081A005 /* StreamDatabaseTests.swift in Sources */,
 					B2A1E4A13E1110010081A002 /* StreamURLValidatorTests.swift in Sources */,
 					B2A1E4A13E1110010081A006 /* VideoLayoutMapperTests.swift in Sources */,
+					B2A1E4A13E1110010081A00B /* OCRBenchmarkTests.swift in Sources */,
 					B2A1E4A13E1110010081A00A /* FileAccessStoreTests.swift in Sources */,
 					B2A1E4A13E1110010081A009 /* SmartPauseQoSTests.swift in Sources */,
 				);
