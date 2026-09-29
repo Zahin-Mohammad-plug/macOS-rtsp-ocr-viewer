@@ -43,8 +43,10 @@ final class MPVPlayerWrapper: ObservableObject {
     // MARK: - Published playback state (main thread)
 
     @Published private(set) var isPlaying: Bool = false
-    /// Playback position, published at ~10 Hz granularity to keep SwiftUI cheap.
-    @Published private(set) var currentTime: TimeInterval = 0
+    /// Playback position at ~10 Hz granularity. Lives in its own observable so
+    /// only views that display time re-render on every tick.
+    let clock = PlaybackClock()
+    var currentTime: TimeInterval { clock.time }
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var playbackSpeed: Double = 1.0
     @Published private(set) var volume: Double = 1.0
@@ -125,15 +127,30 @@ final class MPVPlayerWrapper: ObservableObject {
         mpv_set_option_string(handle, "input-default-bindings", "no")
         mpv_set_option_string(handle, "input-vo-keyboard", "no")
         mpv_set_option_string(handle, "osc", "no")
-        // No Lua scripts (ytdl hook, stats, …): not needed and slow startup.
-        mpv_set_option_string(handle, "load-scripts", "no")
-        mpv_set_option_string(handle, "ytdl", "no")
+        // No Lua scripts at all. mpv's built-ins run on LuaJIT, whose JIT pages
+        // violate the hardened runtime's code-signing rules: signed/Release
+        // builds were SIGKILLed ("Code Signature Invalid") right after launch.
+        // `load-scripts` only covers user scripts; each built-in has its own switch.
+        for option in ["load-scripts", "ytdl", "load-stats-overlay", "load-console", "load-osd-console",
+                       "load-auto-profiles", "load-select", "load-commands", "load-context-menu",
+                       "load-positioning"] {
+            mpv_set_option_string(handle, option, "no")
+        }
         // Hardware decode with copy-back. Zero-copy VideoToolbox frames can't be
         // read back by `screenshot-raw` with the render API, which silently broke
         // Smart Pause / OCR capture. Copy-back costs one GPU→RAM copy per frame
         // (cheap on unified memory) and lets capture work even when the window
         // is hidden or occluded.
         mpv_set_option_string(handle, "hwdec", "videotoolbox-copy")
+        // Joining a live H.264 stream mid-GOP yields undecodable frames until the
+        // next keyframe; VideoToolbox rejects them. mpv's default gives up on
+        // hardware decode after 3 failed frames and stays on software (≈4× the
+        // CPU) for the whole session. Allow ~2 s so the first keyframe arrives.
+        mpv_set_option_string(handle, "hwdec-software-fallback", "60")
+        // Frame capture converts NV12 → BGRA with swscale; the default
+        // full-chroma-interpolation path is plain C and dominated CPU at 1080p.
+        // Chroma precision doesn't matter for sharpness scoring or OCR.
+        mpv_set_option_string(handle, "sws-fast", "yes")
         mpv_set_option_string(handle, "network-timeout", "10")
         mpv_set_option_string(handle, "rtsp-transport", "tcp")
         // Back-seeking inside the demuxer cache is what powers the live DVR.
@@ -317,8 +334,8 @@ final class MPVPlayerWrapper: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.rawTimePosition = time
-                if abs(self.currentTime - time) >= 0.1 {
-                    self.currentTime = time
+                if abs(self.clock.time - time) >= 0.1 {
+                    self.clock.time = time
                 }
             }
         case Self.observedDuration:
@@ -413,7 +430,7 @@ final class MPVPlayerWrapper: ObservableObject {
         let target = max(0, time)
         let ok = command(["seek", String(format: "%.3f", target), exact ? "absolute+exact" : "absolute+keyframes"]) >= 0
         if ok {
-            currentTime = target
+            clock.time = target
             rawTimePosition = target
         }
         return ok
@@ -425,7 +442,7 @@ final class MPVPlayerWrapper: ObservableObject {
         let ok = command(["seek", String(format: "%.3f", offset), exact ? "relative+exact" : "relative"]) >= 0
         if ok {
             let target = max(0, rawTimePosition + offset)
-            currentTime = target
+            clock.time = target
             rawTimePosition = target
         }
         return ok
@@ -720,3 +737,7 @@ final class MPVPlayerWrapper: ObservableObject {
 }
 
 extension MPVPlayerWrapper: SmartPausePlayer {}
+
+final class PlaybackClock: ObservableObject {
+    @Published fileprivate(set) var time: TimeInterval = 0
+}

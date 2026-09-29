@@ -50,6 +50,13 @@ enum SmartPauseSamplingTier: String, Equatable {
     }
 }
 
+/// Live DVR position, updated several times a second. Kept in its own observable
+/// so only the timeline / Live button re-render, not everything observing
+/// StreamManager.
+final class LiveDVRStore: ObservableObject {
+    @Published var state = LiveDVRState.empty()
+}
+
 final class StreamManager: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected
     @Published var streamStats = StreamStats()
@@ -58,7 +65,11 @@ final class StreamManager: ObservableObject {
     @Published var connectionLifecycle: ConnectionLifecycleState = .idle
     @Published var reconnectAttempt: Int = 0
     @Published var smartPauseSamplingTier: SmartPauseSamplingTier = .normal
-    @Published var liveDVRState: LiveDVRState = LiveDVRState.empty()
+    let liveStore = LiveDVRStore()
+    var liveDVRState: LiveDVRState {
+        get { liveStore.state }
+        set { liveStore.state = newValue }
+    }
     @Published private(set) var player: MPVPlayerWrapper?
 
     var database: StreamDatabase?

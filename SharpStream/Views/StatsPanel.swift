@@ -9,6 +9,7 @@ import SwiftUI
 
 struct StatsPanel: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var streamManager: StreamManager
     @State private var stats = StreamStats()
     
     var body: some View {
@@ -106,7 +107,7 @@ struct StatsPanel: View {
 
                 StatRow(
                     label: "Smart Pause Sampling",
-                    value: appState.streamManager.smartPauseSamplingTier.displayName
+                    value: streamManager.smartPauseSamplingTier.displayName
                 )
 
                 StatRow(label: "Memory Pressure", value: stats.memoryPressure.rawValue)

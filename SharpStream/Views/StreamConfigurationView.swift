@@ -26,11 +26,13 @@ struct StreamConfigurationView: View {
             
             Form {
                 TextField("Stream Name", text: $name)
+                    .accessibilityIdentifier("streamNameField")
                     .onChange(of: name) { _, _ in
                         validate()
                     }
                 
                 TextField("Stream URL", text: $url)
+                    .accessibilityIdentifier("streamURLField")
                     .onChange(of: url) { _, _ in
                         validate()
                     }

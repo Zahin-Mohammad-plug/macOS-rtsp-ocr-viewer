@@ -79,17 +79,40 @@ final class AppState: ObservableObject {
     @Published private(set) var isRecognizingText = false
     @Published private(set) var isPerformingSmartPause = false
     @Published var lastSmartPauseDiagnostics: SmartPauseDiagnostics?
+    /// Coarse, de-duplicated mirrors of stream state for menus. (Forwarding every
+    /// StreamManager change would re-render the whole window several times a
+    /// second on live streams; views that need fine-grained state observe
+    /// StreamManager directly.)
+    @Published private(set) var hasPlayer = false
+    @Published private(set) var currentSeekMode: SeekMode = .disabled
+    @Published private(set) var hasCurrentStream = false
     @Published var showOCRInspector: Bool {
         didSet { UserDefaults.standard.set(showOCRInspector, forKey: UserDefaultsKey.showOCRInspector) }
     }
+
+    /// Test runs (UI tests, and unit tests that use the app as their host) get
+    /// throwaway storage and never show the resume prompt, so they neither
+    /// depend on nor modify the user's real library/session. A modal resume
+    /// prompt in the unit-test host used to block the main thread and hang
+    /// the whole run.
+    static let isUITesting: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["SHARPSTREAM_UI_TESTING"] == "1"
+            || environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }()
+    private static let testSandbox: URL? = isUITesting
+        ? FileManager.default.temporaryDirectory.appendingPathComponent("SharpStreamUITest-\(UUID().uuidString)", isDirectory: true)
+        : nil
 
     let streamManager = StreamManager()
     let focusScorer = FocusScorer()
     let ocrEngine = OCREngine()
     let exportManager = ExportManager()
-    let streamDatabase = StreamDatabase()
+    let streamDatabase = StreamDatabase(baseDirectory: AppState.testSandbox)
     let performanceMonitor = PerformanceMonitor()
-    let recoveryStore = SessionRecoveryStore()
+    let recoveryStore = SessionRecoveryStore(fileURL: AppState.testSandbox?.appendingPathComponent("session_recovery.json"))
     lazy var smartPauseCoordinator = SmartPauseCoordinator(focusScorer: focusScorer, ocrEngine: ocrEngine)
 
     private var cancellables = Set<AnyCancellable>()
@@ -113,14 +136,23 @@ final class AppState: ObservableObject {
 
         applyPreferences()
 
-        // Re-publish nested object changes so views observing AppState refresh.
-        streamManager.objectWillChange
-            .sink { [weak self] in self?.objectWillChange.send() }
-            .store(in: &cancellables)
-
         streamManager.$player
             .removeDuplicates { $0 === $1 }
-            .sink { [weak self] player in self?.bind(to: player) }
+            .sink { [weak self] player in
+                self?.hasPlayer = player != nil
+                self?.bind(to: player)
+            }
+            .store(in: &cancellables)
+
+        streamManager.$seekMode
+            .removeDuplicates()
+            .sink { [weak self] mode in self?.currentSeekMode = mode }
+            .store(in: &cancellables)
+
+        streamManager.$currentStream
+            .map { $0 != nil }
+            .removeDuplicates()
+            .sink { [weak self] value in self?.hasCurrentStream = value }
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
@@ -136,9 +168,20 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        if !Self.isUITesting { Self.removeLegacyBufferFiles() }
         performanceMonitor.startMonitoring()
         startStatsUpdateTimer()
         installKeyMonitor()
+    }
+
+    /// The old BufferManager dumped JPEG frames to tmp and kept its own
+    /// recovery index; neither is used anymore.
+    private static func removeLegacyBufferFiles() {
+        let fileManager = FileManager.default
+        try? fileManager.removeItem(at: fileManager.temporaryDirectory.appendingPathComponent("SharpStreamBuffer", isDirectory: true))
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            try? fileManager.removeItem(at: appSupport.appendingPathComponent("SharpStream/buffer_index.json"))
+        }
     }
 
     // MARK: - Preferences
@@ -284,6 +327,7 @@ final class AppState: ObservableObject {
             connect(urlString: url)
             return
         }
+        guard !Self.isUITesting else { return }
         guard let recovery = recoveryStore.load() else { return }
         recoveryStore.clear()
         if ProcessInfo.processInfo.environment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] == "1" { return }

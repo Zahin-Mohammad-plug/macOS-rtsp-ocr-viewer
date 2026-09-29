@@ -14,8 +14,8 @@ struct AppMenu: Commands {
     @ObservedObject var appState: AppState
     @Environment(\.openWindow) private var openWindow
 
-    private var hasPlayer: Bool { appState.player != nil }
-    private var seekMode: SeekMode { appState.streamManager.seekMode }
+    private var hasPlayer: Bool { appState.hasPlayer }
+    private var seekMode: SeekMode { appState.currentSeekMode }
 
     var body: some Commands {
         SidebarCommands()
@@ -70,7 +70,7 @@ struct AppMenu: Commands {
             Button("Save Stream to Library…") {
                 NotificationCenter.default.post(name: .saveCurrentStreamRequested, object: nil)
             }
-            .disabled(appState.streamManager.currentStream == nil)
+            .disabled(!appState.hasCurrentStream)
 
             Button("Disconnect") {
                 appState.disconnect()

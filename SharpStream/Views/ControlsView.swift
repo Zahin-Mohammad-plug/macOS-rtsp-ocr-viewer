@@ -15,7 +15,7 @@ struct ControlsView: View {
     var body: some View {
         VStack(spacing: 6) {
             if let player = streamManager.player {
-                TimelineRow(player: player)
+                TimelineRow(player: player, clock: player.clock, liveStore: streamManager.liveStore)
             } else {
                 TimelineRow.placeholder
             }
@@ -36,6 +36,8 @@ struct TimelineRow: View {
     @EnvironmentObject var streamManager: StreamManager
     @AppStorage(UserDefaultsKey.use24HourClock) private var use24HourClock = false
     @ObservedObject var player: MPVPlayerWrapper
+    @ObservedObject var clock: PlaybackClock
+    @ObservedObject var liveStore: LiveDVRStore
 
     @State private var isScrubbing = false
     @State private var scrubValue: Double = 0
@@ -53,7 +55,7 @@ struct TimelineRow: View {
     }
 
     private var mode: SeekMode { streamManager.seekMode }
-    private var live: LiveDVRState { streamManager.liveDVRState }
+    private var live: LiveDVRState { liveStore.state }
 
     private var range: ClosedRange<Double> {
         switch mode {
@@ -65,7 +67,7 @@ struct TimelineRow: View {
 
     private var actualPosition: Double {
         switch mode {
-        case .absolute: return player.currentTime
+        case .absolute: return clock.time
         case .liveBuffered: return max(0, live.windowSeconds - live.lagSeconds)
         case .disabled: return 0
         }
@@ -281,15 +283,8 @@ private struct ControlRow: View {
             .accessibilityIdentifier("recognizeTextButton")
             .disabled(!hasPlayer || appState.isRecognizingText)
 
-            if mode == .liveBuffered {
-                Button {
-                    appState.jumpToLive()
-                } label: {
-                    Label("Live", systemImage: "forward.end.alt")
-                }
-                .help("Jump to the live edge (⌘L)")
-                .accessibilityIdentifier("jumpToLiveButton")
-                .disabled(streamManager.liveDVRState.isAtLiveEdge && (player?.isPlaying ?? false))
+            if mode == .liveBuffered, let player {
+                JumpToLiveButton(player: player, liveStore: streamManager.liveStore)
             }
         }
         .buttonStyle(.bordered)
@@ -314,6 +309,23 @@ private struct ControlRow: View {
         .help(help)
         .accessibilityIdentifier(id)
         .disabled(!hasPlayer)
+    }
+}
+
+private struct JumpToLiveButton: View {
+    @EnvironmentObject var appState: AppState
+    @ObservedObject var player: MPVPlayerWrapper
+    @ObservedObject var liveStore: LiveDVRStore
+
+    var body: some View {
+        Button {
+            appState.jumpToLive()
+        } label: {
+            Label("Live", systemImage: "forward.end.alt")
+        }
+        .help("Jump to the live edge (⌘L)")
+        .accessibilityIdentifier("jumpToLiveButton")
+        .disabled(liveStore.state.isAtLiveEdge && player.isPlaying)
     }
 }
 
