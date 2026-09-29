@@ -87,34 +87,17 @@ struct StatsPanel: View {
 
                 Divider()
 
-                Text("Network / Wi-Fi")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                StatRow(label: "RTT (SRT)", value: stats.rttMs.map { String(format: "%.0f ms", $0) } ?? "N/A (phase 2)")
-                StatRow(
-                    label: "Packet Loss (SRT)",
-                    value: stats.packetLossPct.map { String(format: "%.1f%%", $0) } ?? "N/A (phase 2)"
-                )
-                StatRow(label: "RSSI", value: "N/A (phase 2)")
-
-                Divider()
-
                 Text("Buffer & Performance")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
-                StatRow(label: "Buffer Duration", value: formatTime(stats.bufferDuration))
-                StatRow(label: "RAM Buffer", value: "\(stats.ramBufferUsage) MB")
-                StatRow(label: "Disk Buffer", value: "\(stats.diskBufferUsage) MB")
+                StatRow(label: "Rewind Window", value: formatTime(stats.bufferDuration))
+                StatRow(label: "Smart Pause Frames", value: "\(stats.ramBufferUsage) MB")
 
                 if let focusScore = stats.currentFocusScore {
                     StatRow(label: "Focus Score", value: String(format: "%.2f", focusScore))
                 }
                 if let cpuUsage = stats.cpuUsage {
                     StatRow(label: "CPU Usage", value: String(format: "%.1f%%", cpuUsage))
-                }
-
-                if let gpuUsage = stats.gpuUsage {
-                    StatRow(label: "GPU Usage", value: String(format: "%.1f%%", gpuUsage))
                 }
 
                 if let scoringFPS = stats.focusScoringFPS {

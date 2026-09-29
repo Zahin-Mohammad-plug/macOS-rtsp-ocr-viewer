@@ -2,53 +2,52 @@
 //  FocusScorer.swift
 //  SharpStream
 //
-//  Focus scoring coordinator
+//  Focus scoring coordinator and Smart Pause candidate store.
+//
+//  Memory model: every scored frame is recorded as a lightweight sample
+//  (timestamp + score) for statistics. Full-resolution pixel buffers are kept
+//  only for frames that can still be the sharpest frame of *some* lookback
+//  window ending now — i.e. frames not beaten by any newer frame. That set is
+//  typically a handful of frames, so memory stays bounded regardless of how
+//  long the stream runs or how high its resolution is.
+//
+//  Thread safety: scoreFrame may be called from any thread; all state is
+//  guarded by a lock. Scoring itself runs outside the lock.
 //
 
 import Foundation
 import CoreVideo
 import Combine
 
-class FocusScorer: ObservableObject {
-    private var openCVScorer: OpenCVFocusScorer?
-    private var swiftScorer: SwiftFocusScorer
-    private var useOpenCV: Bool = true
-    
-    @Published var algorithm: FocusAlgorithm = .laplacian
-    
-    private var scoreHistory: [FrameScore] = []
-    private let maxHistorySize = 1000
-    
-    init() {
-        swiftScorer = SwiftFocusScorer()
-        
-        // Try to initialize OpenCV (from opencv-spm package)
-        openCVScorer = OpenCVFocusScorer()
-        useOpenCV = true // Will fall back to Swift-native if OpenCV not available
+nonisolated final class FocusScorer: ObservableObject {
+    @Published private(set) var algorithm: FocusAlgorithm = .laplacian
+
+    /// Candidates older than this (relative to the newest frame) are dropped.
+    var candidateRetention: TimeInterval = 8.0
+    /// Score samples older than this are dropped (used for FPS / counts).
+    var sampleRetention: TimeInterval = 30.0
+
+    private struct Sample {
+        let timestamp: Date
+        let score: Double
     }
-    
+
+    private let lock = NSLock()
+    private var currentAlgorithm: FocusAlgorithm = .laplacian
+    private var candidates: [FrameScore] = [] // sorted by timestamp, scores strictly decreasing
+    private var samples: [Sample] = []        // sorted by timestamp
+
+    init() {}
+
+    @discardableResult
     func scoreFrame(
         _ pixelBuffer: CVPixelBuffer,
         timestamp: Date,
         playbackTime: TimeInterval? = nil,
         sequenceNumber: Int
     ) -> FrameScore {
-        let score: Double
-        
-        if useOpenCV, let openCVScorer = openCVScorer {
-            let openCVScore = openCVScorer.calculateScore(pixelBuffer, algorithm: algorithm)
-            // If OpenCV returns 0, it might mean it's not available, fall back to Swift
-            if openCVScore > 0 {
-                score = openCVScore
-            } else {
-                // Fall back to Swift-native (only Laplacian is implemented in Swift)
-                score = swiftScorer.calculateScore(pixelBuffer)
-            }
-        } else {
-            // Use Swift-native (only Laplacian is implemented in Swift)
-            score = swiftScorer.calculateScore(pixelBuffer)
-        }
-        
+        let algorithm = lock.withLock { currentAlgorithm }
+        let score = SharpnessMetrics.score(pixelBuffer, algorithm: algorithm)
         let frameScore = FrameScore(
             timestamp: timestamp,
             score: score,
@@ -56,30 +55,51 @@ class FocusScorer: ObservableObject {
             pixelBuffer: pixelBuffer,
             sequenceNumber: sequenceNumber
         )
-        
-        // Add to history
-        scoreHistory.append(frameScore)
-        if scoreHistory.count > maxHistorySize {
-            scoreHistory.removeFirst()
-        }
-        
+        record(frameScore)
         return frameScore
     }
-    
+
+    private func record(_ frame: FrameScore) {
+        lock.withLock {
+            samples.append(Sample(timestamp: frame.timestamp, score: frame.score))
+            if samples.count > 1, samples[samples.count - 2].timestamp > frame.timestamp {
+                samples.sort { $0.timestamp < $1.timestamp }
+            }
+
+            // A candidate that is not newer and not sharper than this frame can
+            // never be the best frame of a window that ends at/after this frame.
+            candidates.removeAll { $0.timestamp <= frame.timestamp && $0.score <= frame.score }
+            let insertIndex = candidates.firstIndex { $0.timestamp > frame.timestamp } ?? candidates.endIndex
+            candidates.insert(frame, at: insertIndex)
+
+            let newest = max(frame.timestamp, candidates.last?.timestamp ?? frame.timestamp)
+            let candidateCutoff = newest.addingTimeInterval(-candidateRetention)
+            candidates.removeAll { $0.timestamp < candidateCutoff }
+            let sampleCutoff = newest.addingTimeInterval(-sampleRetention)
+            if let firstKept = samples.firstIndex(where: { $0.timestamp >= sampleCutoff }), firstKept > 0 {
+                samples.removeFirst(firstKept)
+            }
+        }
+    }
+
     func findBestFrame(in timeRange: TimeInterval, now: Date = Date()) -> FrameScore? {
-        let cutoffTime = now.addingTimeInterval(-timeRange)
-        let recentFrames = scoreHistory.filter { $0.timestamp >= cutoffTime && $0.timestamp <= now }
-        
-        return recentFrames.max()
+        let cutoff = now.addingTimeInterval(-timeRange)
+        return lock.withLock {
+            candidates
+                .filter { $0.timestamp >= cutoff && $0.timestamp <= now }
+                .max { $0.score < $1.score }
+        }
     }
 
     func recentFrameCount(in timeRange: TimeInterval, now: Date = Date()) -> Int {
-        let cutoffTime = now.addingTimeInterval(-timeRange)
-        return scoreHistory.filter { $0.timestamp >= cutoffTime && $0.timestamp <= now }.count
+        let cutoff = now.addingTimeInterval(-timeRange)
+        return lock.withLock {
+            samples.reduce(0) { $0 + (($1.timestamp >= cutoff && $1.timestamp <= now) ? 1 : 0) }
+        }
     }
 
     func frame(sequenceNumber: Int) -> FrameScore? {
-        scoreHistory.first(where: { $0.sequenceNumber == sequenceNumber })
+        lock.withLock { candidates.first { $0.sequenceNumber == sequenceNumber } }
     }
 
     func selectBestFrame(
@@ -112,32 +132,46 @@ class FocusScorer: ObservableObject {
             seekMode: seekMode
         )
     }
-    
+
     func getCurrentScore() -> Double? {
-        return scoreHistory.last?.score
+        lock.withLock { samples.last?.score }
     }
-    
-    func getScoringFPS() -> Double {
-        // Calculate FPS based on recent scoring rate
-        guard scoreHistory.count >= 2 else { return 0 }
-        
-        let recent = Array(scoreHistory.suffix(30))
-        guard let first = recent.first,
-              let last = recent.last else { return 0 }
-        
-        let duration = last.timestamp.timeIntervalSince(first.timestamp)
-        return duration > 0 ? Double(recent.count) / duration : 0
+
+    func getScoringFPS(now: Date = Date()) -> Double {
+        lock.withLock {
+            let window: TimeInterval = 5
+            let cutoff = now.addingTimeInterval(-window)
+            let recent = samples.filter { $0.timestamp >= cutoff }
+            guard recent.count >= 2,
+                  let first = recent.first, let last = recent.last else { return 0 }
+            let span = last.timestamp.timeIntervalSince(first.timestamp)
+            return span > 0 ? Double(recent.count - 1) / span : 0
+        }
     }
-    
+
+    /// Approximate memory held by retained candidate frames, in bytes.
+    func retainedFrameBytes() -> Int {
+        lock.withLock {
+            candidates.reduce(0) { total, frame in
+                guard let buffer = frame.pixelBuffer else { return total }
+                return total + CVPixelBufferGetDataSize(buffer)
+            }
+        }
+    }
+
+    func reset() {
+        lock.withLock {
+            candidates.removeAll()
+            samples.removeAll()
+        }
+    }
+
     func setAlgorithm(_ algorithm: FocusAlgorithm) {
-        self.algorithm = algorithm
-        // All algorithms now implemented in OpenCV
-        // Tenengrad and Sobel require OpenCV, Laplacian can fall back to Swift-native
-        switch algorithm {
-        case .laplacian:
-            useOpenCV = true // Use OpenCV if available, otherwise Swift-native
-        case .tenengrad, .sobel:
-            useOpenCV = true // Tenengrad and Sobel require OpenCV
+        lock.withLock { currentAlgorithm = algorithm }
+        if Thread.isMainThread {
+            self.algorithm = algorithm
+        } else {
+            DispatchQueue.main.async { self.algorithm = algorithm }
         }
     }
 }

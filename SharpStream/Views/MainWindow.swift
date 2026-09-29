@@ -2,632 +2,351 @@
 //  MainWindow.swift
 //  SharpStream
 //
-//  Primary video player window
+//  Primary player window: stream library sidebar, video + controls, and an
+//  inspector column with recognized text.
+//
+//  Window size/position are left to AppKit/SwiftUI state restoration; the view
+//  only declares minimum sizes.
 //
 
 import SwiftUI
 import AppKit
-import Combine
 import UniformTypeIdentifiers
 
 struct MainWindow: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var streamManager: StreamManager
     @Environment(\.openWindow) private var openWindow
-    @State private var showStreamList = true
-    @State private var isFullscreen = false
-    @AppStorage("windowWidth") private var savedWidth: Double = 1200
-    @AppStorage("windowHeight") private var savedHeight: Double = 800
-    @State private var observerTokens: [NSObjectProtocol] = []
-    @State private var showSaveCurrentStreamSheet = false
-    @State private var saveCurrentStreamDraft: SavedStream?
-    @State private var didApplyInitialWindowSize = false
-    
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var saveDraft: SavedStream?
+
     var body: some View {
-        HSplitView {
-            if showStreamList {
-                StreamListView()
-                    .frame(minWidth: 200, idealWidth: 220)
-            }
-            
-            VStack(spacing: 0) {
-                // Video player area (handles drag and drop internally)
-                VideoPlayerView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .layoutPriority(0)
-                
-                // Controls
-                ControlsView()
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("controlsContainer")
-                    .layoutPriority(1)
-            }
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            StreamListView()
+                .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 380)
+        } detail: {
+            PlayerDetailView()
+                .inspector(isPresented: $appState.showOCRInspector) {
+                    OCRInspectorView()
+                        .inspectorColumnWidth(min: 220, ideal: 280, max: 440)
+                }
         }
+        .frame(minWidth: 720, minHeight: 460)
+        .navigationTitle(streamManager.currentStream?.name ?? "SharpStream")
+        .navigationSubtitle(subtitle)
         .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button(action: { showStreamList.toggle() }) {
-                    Image(systemName: "sidebar.left")
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    appState.pasteStreamURL()
+                } label: {
+                    Label("Open URL from Clipboard", systemImage: "link.badge.plus")
                 }
-                .accessibilityIdentifier("toggleSidebarToolbarButton")
-            }
-            
-            ToolbarItem(placement: .automatic) {
-                Button("Paste Stream URL") {
-                    pasteStreamURL()
-                }
+                .help("Open the stream URL on the clipboard (⇧⌘V)")
                 .accessibilityIdentifier("pasteStreamToolbarButton")
-                .keyboardShortcut("n", modifiers: [.command, .shift])
-            }
-            
-            ToolbarItem(placement: .automatic) {
-                Button(action: { toggleFullscreen() }) {
-                    Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+
+                Button {
+                    appState.presentOpenFilePanel()
+                } label: {
+                    Label("Open File", systemImage: "folder")
                 }
-                .keyboardShortcut("f", modifiers: [.command, .control])
-            }
-        }
-        .onAppear {
-            if ProcessInfo.processInfo.environment["SHARPSTREAM_UI_TESTING"] == "1" {
-                NSApplication.shared.activate(ignoringOtherApps: true)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
+                .help("Open a video file (⌘O)")
+
+                Button {
+                    openWindow(id: "statistics")
+                } label: {
+                    Label("Statistics", systemImage: "chart.bar.xaxis")
                 }
-            }
-            checkRecoveryData()
-            restoreWindowState()
-            setupWindowConstraints()
-            if observerTokens.isEmpty {
-                setupErrorNotifications()
-                setupCommandNotifications()
+                .help("Show stream statistics (⌥⌘I)")
+
+                Button {
+                    appState.showOCRInspector.toggle()
+                } label: {
+                    Label("Text Panel", systemImage: "sidebar.right")
+                }
+                .help("Show or hide recognized text (⌥⌘T)")
             }
         }
-        .onDisappear {
-            removeObservers()
-        }
-        .frame(minWidth: 800, minHeight: 600)
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
-            saveWindowState()
+        .background(WindowReporter { window in
+            appState.registerPlayerWindow(window)
+        })
+        .task {
+            // Let the window finish appearing before any modal prompt.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            appState.checkForRecoverableSession()
         }
         .onReceive(NotificationCenter.default.publisher(for: .saveCurrentStreamRequested)) { _ in
-            prepareCurrentStreamSaveFlow()
+            prepareSaveDraft()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .showStatisticsWindowRequested)) { _ in
-            openStatisticsWindow()
-        }
-        .sheet(isPresented: $showSaveCurrentStreamSheet) {
-            if let saveCurrentStreamDraft {
-                StreamConfigurationView(stream: saveCurrentStreamDraft) { configuredStream in
-                    saveCurrentStream(configuredStream)
-                    showSaveCurrentStreamSheet = false
-                }
-            }
-        }
-        .background(WindowAccessor { window in
-            if let window = window {
-                setupWindowFrame(window: window)
-            }
-        })
-    }
-    
-    private func pasteStreamURL() {
-        let pasteboard = NSPasteboard.general
-        guard let rawURLString = pasteboard.string(forType: .string) else {
-            return
-        }
-
-        let urlString = normalizePastedStreamInput(rawURLString)
-        guard !urlString.isEmpty else {
-            return
-        }
-        
-        // Validate and add stream
-        let result = StreamURLValidator.validate(urlString)
-        if result.isValid {
-            // Quick connect
-            let protocolType = StreamProtocol.detect(from: urlString)
-            let stream = SavedStream(name: "Quick Stream", url: urlString, protocolType: protocolType)
-            appState.streamManager.connect(to: stream)
-        } else if let message = result.errorMessage {
-            if ProcessInfo.processInfo.environment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] == "1" {
-                print("⚠️ Paste stream validation failed: \(message)")
-            } else {
-                let alert = NSAlert()
-                alert.messageText = "Invalid Stream Input"
-                alert.informativeText = message
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
+        .sheet(item: $saveDraft) { draft in
+            StreamConfigurationView(stream: draft) { configured in
+                saveStream(configured)
+                saveDraft = nil
             }
         }
     }
 
-    private func normalizePastedStreamInput(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-
-        let expandedPath = (trimmed as NSString).expandingTildeInPath
-        if expandedPath.hasPrefix("/") || expandedPath.hasPrefix("./") || expandedPath.hasPrefix("../") {
-            let standardized = URL(fileURLWithPath: expandedPath).standardizedFileURL
-            return standardized.absoluteString
+    private var subtitle: String {
+        switch streamManager.connectionState {
+        case .disconnected: return ""
+        case .connecting: return "Connecting…"
+        case .reconnecting: return "Reconnecting…"
+        case .error: return "Error"
+        case .connected:
+            switch streamManager.seekMode {
+            case .liveBuffered: return "Live"
+            case .absolute: return "File"
+            case .disabled: return ""
+            }
         }
-
-        return trimmed
     }
 
-    private func prepareCurrentStreamSaveFlow() {
-        guard let currentStream = appState.streamManager.currentStream else {
-            showAlert(title: "No Active Stream", message: "Connect to a stream before saving it.")
-            return
-        }
-
-        if let existing = appState.streamDatabase.getStream(byURL: currentStream.url) {
-            saveCurrentStreamDraft = existing
-        } else {
-            saveCurrentStreamDraft = SavedStream(
-                name: currentStream.name,
-                url: currentStream.url,
-                protocolType: currentStream.protocolType,
-                lastUsed: Date()
-            )
-        }
-
-        showSaveCurrentStreamSheet = true
+    private func prepareSaveDraft() {
+        guard let current = streamManager.currentStream else { return }
+        saveDraft = appState.streamDatabase.getStream(byURL: current.url)
+            ?? SavedStream(name: current.name, url: current.url, protocolType: current.protocolType, lastUsed: Date())
     }
 
-    private func saveCurrentStream(_ configuredStream: SavedStream) {
+    private func saveStream(_ stream: SavedStream) {
         do {
             _ = try appState.streamDatabase.saveOrUpdateByURL(
-                name: configuredStream.name,
-                url: configuredStream.url,
-                protocolType: configuredStream.protocolType,
+                name: stream.name,
+                url: stream.url,
+                protocolType: stream.protocolType,
                 lastUsed: Date()
             )
             NotificationCenter.default.post(name: .savedStreamsUpdated, object: nil)
-            NotificationCenter.default.post(name: .recentStreamsUpdated, object: nil)
+            appState.showStatus("Saved “\(stream.name)” to the library.")
         } catch {
-            showAlert(
-                title: "Save Failed",
-                message: "Unable to save stream: \(error.localizedDescription)"
-            )
+            appState.showStatus("Unable to save stream: \(error.localizedDescription)", isError: true)
         }
     }
-    
-    private func checkRecoveryData() {
-        Task {
-            if let recoveryData = await appState.bufferManager.getRecoveryData() {
-                if ProcessInfo.processInfo.environment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] == "1" {
-                    await appState.bufferManager.clearRecoveryData()
-                    return
-                }
-                await MainActor.run {
-                    showRecoveryDialog(recoveryData: recoveryData)
-                }
-            }
-        }
-    }
-    
-    private func showRecoveryDialog(recoveryData: BufferRecoveryData) {
-        let alert = NSAlert()
-        alert.messageText = "Resume Previous Stream?"
-        alert.informativeText = "SharpStream detected an interrupted stream. Would you like to resume?"
-        
-        if let streamURL = recoveryData.streamURL {
-            alert.informativeText += "\n\nStream: \(streamURL)"
-        }
-        
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Resume")
-        alert.addButton(withTitle: "Cancel")
-        
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            // Resume stream
-            if let url = recoveryData.streamURL {
-                let protocolType = StreamProtocol.detect(from: url)
-                let stream = SavedStream(name: "Recovered Stream", url: url, protocolType: protocolType)
-                appState.streamManager.connect(to: stream)
-            }
-        } else {
-            // Clear recovery data
-            Task {
-                await appState.bufferManager.clearRecoveryData()
-            }
-        }
-    }
-    
-    private func toggleFullscreen() {
-        isFullscreen.toggle()
-        
-        // Get the window and toggle fullscreen
-        if let window = NSApplication.shared.windows.first {
-            window.toggleFullScreen(nil)
-        }
-    }
+}
 
-    private func openStatisticsWindow() {
-        openWindow(id: "statistics")
-    }
-    
-    private func saveWindowState() {
-        // Only save window size (position is not persisted)
-        if let window = NSApplication.shared.windows.first {
-            let contentRect = window.contentRect(forFrameRect: window.frame)
-            savedWidth = Double(contentRect.width)
-            savedHeight = Double(contentRect.height)
+struct PlayerDetailView: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            VideoPlayerView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .layoutPriority(1)
+            Divider()
+            ControlsView()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("controlsContainer")
         }
-    }
-    
-    private func restoreWindowState() {
-        // Window size is restored via @AppStorage in frame modifier (line 64)
-        // Position is not persisted - window will use system default position
-    }
-    
-    private func setupWindowConstraints() {
-        // Ensure window doesn't extend beyond screen bounds
-        DispatchQueue.main.async {
-            if let window = NSApplication.shared.windows.first {
-                setupWindowFrame(window: window)
-            }
-        }
-    }
-
-    private func showAlert(title: String, message: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-    
-    private func setupWindowFrame(window: NSWindow) {
-        guard let screen = window.screen ?? NSScreen.main else { return }
-        let screenFrame = screen.visibleFrame
-        let maxWidth = max(800, screenFrame.width)
-        let maxHeight = max(600, screenFrame.height)
-
-        if ProcessInfo.processInfo.environment["SHARPSTREAM_UI_TESTING"] == "1" {
-            // Keep UI automation deterministic and avoid inheriting broken persisted sizes.
-            savedWidth = min(1200, maxWidth)
-            savedHeight = min(800, maxHeight)
-        }
-
-        let resolvedSavedWidth = savedWidth.isFinite ? savedWidth : 1200
-        let resolvedSavedHeight = savedHeight.isFinite ? savedHeight : 800
-
-        if !didApplyInitialWindowSize {
-            let targetWidth = min(max(resolvedSavedWidth, 800), maxWidth)
-            let targetHeight = min(max(resolvedSavedHeight, 600), maxHeight)
-            window.setContentSize(NSSize(width: targetWidth, height: targetHeight))
-            DispatchQueue.main.async {
-                self.didApplyInitialWindowSize = true
-            }
-        }
-
-        let currentFrame = window.frame
-        
-        // Constrain window to visible frame
-        var newFrame = currentFrame
-        
-        // Ensure window fits within visible area
-        if currentFrame.maxX > screenFrame.maxX {
-            newFrame.origin.x = screenFrame.maxX - currentFrame.width
-        }
-        if currentFrame.maxY > screenFrame.maxY {
-            newFrame.origin.y = screenFrame.maxY - currentFrame.height
-        }
-        if currentFrame.minX < screenFrame.minX {
-            newFrame.origin.x = screenFrame.minX
-        }
-        if currentFrame.minY < screenFrame.minY {
-            newFrame.origin.y = screenFrame.minY
-        }
-        
-        // Ensure minimum size
-        if newFrame.width < 800 {
-            newFrame.size.width = 800
-        }
-        if newFrame.height < 600 {
-            newFrame.size.height = 600
-        }
-        if newFrame.width > screenFrame.width {
-            newFrame.size.width = screenFrame.width
-        }
-        if newFrame.height > screenFrame.height {
-            newFrame.size.height = screenFrame.height
-        }
-        
-        // Don't resize if already correct
-        if newFrame != currentFrame {
-            window.setFrame(newFrame, display: true)
-        }
-        
-        // Update saved values
-        let contentRect = window.contentRect(forFrameRect: newFrame)
-        savedWidth = Double(contentRect.width)
-        savedHeight = Double(contentRect.height)
-    }
-    
-    private func setupErrorNotifications() {
-        let token = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("MPVError"),
-            object: nil,
-            queue: .main
-        ) { notification in
-            if let userInfo = notification.userInfo,
-               let message = userInfo["message"] as? String {
-                print("🔔 Received MPV error notification: \(message)")
-                if ProcessInfo.processInfo.environment["SHARPSTREAM_DISABLE_BLOCKING_ALERTS"] == "1" {
-                    // Keep UI automation and smoke runs non-blocking.
-                    return
-                }
-                let alert = NSAlert()
-                alert.messageText = "Playback Error"
-                alert.informativeText = message
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
-            }
-        }
-        observerTokens.append(token)
-    }
-
-    private func setupCommandNotifications() {
-        let center = NotificationCenter.default
-
-        let pasteToken = center.addObserver(
-            forName: NSNotification.Name("PasteStreamURL"),
-            object: nil,
-            queue: .main
-        ) { _ in
-            self.pasteStreamURL()
-        }
-        observerTokens.append(pasteToken)
-
-        let sidebarToken = center.addObserver(
-            forName: NSNotification.Name("ToggleSidebar"),
-            object: nil,
-            queue: .main
-        ) { _ in
-            self.showStreamList.toggle()
-        }
-        observerTokens.append(sidebarToken)
-    }
-
-    private func removeObservers() {
-        for token in observerTokens {
-            NotificationCenter.default.removeObserver(token)
-        }
-        observerTokens.removeAll()
     }
 }
 
 struct VideoPlayerView: View {
     @EnvironmentObject var appState: AppState
-    @State private var isDragOver = false
+    @EnvironmentObject var streamManager: StreamManager
+    @Environment(\.openWindow) private var openWindow
+    @State private var isDropTargeted = false
 
     var body: some View {
-        let streamManager = appState.streamManager
-        let connectionState = streamManager.connectionState
-        let hasActivePlayer = streamManager.player != nil && connectionState != .disconnected
+        ZStack {
+            Color.black
 
-        return ZStack {
-            if hasActivePlayer {
-                ZStack {
-                    MPVVideoView(player: streamManager.player)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let player = streamManager.player {
+                MPVVideoView(player: player)
+                    .id(ObjectIdentifier(player))
+                    .accessibilityIdentifier("videoSurface")
+            }
+
+            if let frame = appState.analyzedFrame {
+                AnalyzedFrameOverlay(frame: frame)
+            }
+
+            connectionOverlay
+
+            if streamManager.player == nil {
+                EmptyPlayerView(isDropTargeted: isDropTargeted)
+            }
+
+            Group {
+                if let busyText {
+                    ProgressBadge(text: busyText)
+                } else if let player = streamManager.player, streamManager.connectionState == .connected {
+                    BufferingIndicator(player: player)
                 }
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("videoSurface")
-                .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
-                        handleFileDrop(providers: providers)
-                    }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .padding(12)
+
+            if let message = appState.statusMessage {
+                StatusToast(message: message)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, 14)
+                    .padding(.horizontal, 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .id(message.id)
+            }
+        }
+        .clipped()
+        .animation(.easeOut(duration: 0.2), value: appState.statusMessage)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first else { return false }
+            if url.isFileURL {
+                appState.openFile(url: url)
             } else {
-                Rectangle()
-                    .fill(isDragOver ? Color.gray.opacity(0.3) : Color.black)
-                    .overlay(
-                        VStack(spacing: 16) {
-                            if isDragOver {
-                                Image(systemName: "arrow.down.doc")
-                                    .font(.system(size: 48))
-                                    .foregroundColor(.blue)
-                                Text("Drop Video File Here")
-                                    .font(.headline)
-                            } else {
-                                Image(systemName: "video.slash")
-                                    .font(.system(size: 48))
-                                    .foregroundColor(.secondary)
-                                Text("No Stream Connected")
-                                    .accessibilityIdentifier("noStreamLabel")
-                                    .foregroundColor(.secondary)
-                                Text("Drag and drop a video file (MP4, MKV, MOV, etc.) to play")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                    .padding(.top, 4)
-                            }
-                        }
-                    )
-                    .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
-                        handleFileDrop(providers: providers)
-                    }
+                appState.connect(urlString: url.absoluteString)
             }
-
-            switch connectionState {
-            case .connecting:
-                connectionOverlay(text: "Connecting...", showsProgress: true)
-            case .reconnecting:
-                connectionOverlay(
-                    text: "Reconnecting (attempt \(max(streamManager.reconnectAttempt, 1)))...",
-                    showsProgress: true
-                )
-            case .error(let message):
-                if hasActivePlayer {
-                    connectionOverlay(text: "Playback error: \(message)", showsProgress: false)
-                }
-            case .connected, .disconnected:
-                EmptyView()
-            }
-            
-            // OCR Overlay
-            if appState.ocrEngine.isEnabled {
-                OCROverlayView()
-            }
+            return true
+        } isTargeted: { targeted in
+            isDropTargeted = targeted
         }
         .contextMenu {
-            Button("Show Statistics") {
-                NotificationCenter.default.post(name: .showStatisticsWindowRequested, object: nil)
-            }
+            Button("Smart Pause") { appState.smartPause() }
+            Button("Recognize Text") { appState.recognizeText() }
+            Divider()
+            Button("Copy Frame") { appState.copyFrame() }
+            Button("Copy Recognized Text") { appState.copyOCRText() }
+            Button("Save Frame As…") { appState.saveFrameAs() }
+            Divider()
+            Button("Show Statistics") { openWindow(id: "statistics") }
         }
+    }
+
+    private var busyText: String? {
+        if appState.isPerformingSmartPause { return "Finding sharpest frame…" }
+        if appState.isRecognizingText { return "Recognizing text…" }
+        return nil
     }
 
     @ViewBuilder
-    private func connectionOverlay(text: String, showsProgress: Bool) -> some View {
-        VStack(spacing: 8) {
+    private var connectionOverlay: some View {
+        switch streamManager.connectionState {
+        case .connecting:
+            ConnectionCard(text: "Connecting…", showsProgress: true)
+        case .reconnecting:
+            ConnectionCard(text: "Reconnecting (attempt \(max(streamManager.reconnectAttempt, 1)))…", showsProgress: true)
+        case .error(let message):
+            ConnectionCard(text: message, showsProgress: false, isError: true) {
+                if let stream = streamManager.currentStream {
+                    Button("Retry") { appState.connect(to: stream) }
+                }
+                Button("Close") { appState.disconnect() }
+            }
+        case .connected, .disconnected:
+            EmptyView()
+        }
+    }
+}
+
+private struct EmptyPlayerView: View {
+    let isDropTargeted: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: isDropTargeted ? "arrow.down.doc.fill" : "play.rectangle")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(isDropTargeted ? Color.accentColor : .secondary)
+            Text(isDropTargeted ? "Drop to Play" : "No Stream Connected")
+                .font(.title3.weight(.medium))
+                .foregroundStyle(.primary)
+                .accessibilityIdentifier("noStreamLabel")
+            Text("Pick a stream in the sidebar, paste a URL (⇧⌘V), or drop a video file here.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.clear)
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+private struct ConnectionCard<Actions: View>: View {
+    let text: String
+    let showsProgress: Bool
+    var isError = false
+    @ViewBuilder var actions: () -> Actions
+
+    init(text: String, showsProgress: Bool, isError: Bool = false, @ViewBuilder actions: @escaping () -> Actions = { EmptyView() }) {
+        self.text = text
+        self.showsProgress = showsProgress
+        self.isError = isError
+        self.actions = actions
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
             if showsProgress {
-                ProgressView()
+                ProgressView().controlSize(.small)
+            } else if isError {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                    .font(.title2)
             }
             Text(text)
                 .accessibilityIdentifier("connectionOverlayText")
-                .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
+                .lineLimit(4)
+            HStack { actions() }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(maxWidth: 420)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .padding(24)
     }
-    
-    private func handleFileDrop(providers: [NSItemProvider]) -> Bool {
-        print("📥 Drag and drop: Received \(providers.count) item(s)")
-        
-        for provider in providers {
-            print("📥 Processing provider: \(provider.registeredTypeIdentifiers)")
-            
-            if provider.hasItemConformingToTypeIdentifier("public.file-url") {
-                provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, error in
-                    if let error = error {
-                        print("❌ Error loading file: \(error.localizedDescription)")
-                        DispatchQueue.main.async {
-                            self.showErrorAlert(title: "Error Loading File", message: error.localizedDescription)
-                        }
-                        return
-                    }
-                    
-                    if let data = item as? Data,
-                       let urlString = String(data: data, encoding: .utf8) {
-                        print("📁 File URL from data: \(urlString)")
-                        if let url = URL(string: urlString) {
-                            DispatchQueue.main.async {
-                                self.loadVideoFile(url: url)
-                            }
-                        } else {
-                            print("❌ Failed to create URL from string: \(urlString)")
-                            DispatchQueue.main.async {
-                                self.showErrorAlert(title: "Invalid URL", message: "Could not parse file URL: \(urlString)")
-                            }
-                        }
-                    } else if let url = item as? URL {
-                        print("📁 File URL direct: \(url.absoluteString)")
-                        DispatchQueue.main.async {
-                            self.loadVideoFile(url: url)
-                        }
-                    } else {
-                        print("❌ Unexpected item type: \(type(of: item))")
-                        DispatchQueue.main.async {
-                            self.showErrorAlert(title: "Unknown File Type", message: "Could not process dropped file")
-                        }
-                    }
-                }
-                return true
-            } else {
-                print("⚠️ Provider does not conform to public.file-url")
-            }
+}
+
+private struct ProgressBadge: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(text).font(.callout)
         }
-        return false
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: Capsule())
     }
-    
-    private func showErrorAlert(title: String, message: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+}
+
+private struct StatusToast: View {
+    let message: StatusMessage
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: message.isError ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(message.isError ? Color.orange : Color.green)
+            Text(message.text)
+                .lineLimit(2)
+                .accessibilityIdentifier("controlStatusMessage")
+        }
+        .font(.callout)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(radius: 6, y: 2)
+        .allowsHitTesting(false)
     }
-    
-    private func loadVideoFile(url: URL) {
-        print("   - isFileURL: \(url.isFileURL)")
-        print("   - path: \(url.path)")
-        print("   - absoluteString: \(url.absoluteString)")
-        
-        // Ensure we have a file URL
-        let fileURL: URL
-        if url.isFileURL {
-            fileURL = url
-        } else if let urlString = url.absoluteString.removingPercentEncoding,
-                   urlString.hasPrefix("file://") {
-            fileURL = URL(string: urlString) ?? url
-        } else {
-            fileURL = URL(fileURLWithPath: url.path)
+}
+
+/// Reports the hosting NSWindow once it's available.
+struct WindowReporter: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> ReporterView {
+        let view = ReporterView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ nsView: ReporterView, context: Context) {}
+
+    final class ReporterView: NSView {
+        var onWindow: ((NSWindow) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { onWindow?(window) }
         }
-        
-        
-        // Check if file exists
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            print("❌ File does not exist at path: \(fileURL.path)")
-            let alert = NSAlert()
-            alert.messageText = "File Not Found"
-            alert.informativeText = "The file does not exist at:\n\(fileURL.path)"
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-            return
-        }
-        
-        // Get file attributes
-        if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path) {
-            if let size = attributes[.size] as? Int64 {
-                print("📊 File size: \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))")
-            }
-        }
-        
-        // Check if it's a video file
-        let videoExtensions = ["mp4", "mkv", "mov", "avi", "m4v", "ts", "mts", "webm", "flv", "wmv", "mpg", "mpeg", "3gp"]
-        let fileExtension = fileURL.pathExtension.lowercased()
-        
-        print("📝 File extension: .\(fileExtension)")
-        
-        guard videoExtensions.contains(fileExtension) else {
-            print("❌ Unsupported file extension: .\(fileExtension)")
-            let alert = NSAlert()
-            alert.messageText = "Unsupported File Type"
-            alert.informativeText = "Please drop a video file (MP4, MKV, MOV, AVI, TS, etc.)\n\nFile extension: .\(fileExtension)"
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-            return
-        }
-        
-        // Create a file:// URL string
-        let fileURLString = "file://\(fileURL.path)"
-        
-        
-        
-        // Create stream and connect
-        let protocolType = StreamProtocol.file
-        let stream = SavedStream(
-            name: fileURL.lastPathComponent,
-            url: fileURLString,
-            protocolType: protocolType
-        )
-        
-        print("▶️ Connecting to stream: \(stream.name)")
-        print("   URL: \(StreamURLRedactor.redacted(stream.url))")
-        
-        appState.streamManager.connect(to: stream)
-        
-        print("✅ Stream connection initiated")
     }
 }

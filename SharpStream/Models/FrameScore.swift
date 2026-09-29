@@ -8,7 +8,7 @@
 import Foundation
 import CoreVideo
 
-struct FrameScore: Identifiable {
+nonisolated struct FrameScore: Identifiable {
     let id: UUID
     let timestamp: Date
     let score: Double
@@ -33,7 +33,7 @@ struct FrameScore: Identifiable {
     }
 }
 
-extension FrameScore: Comparable {
+nonisolated extension FrameScore: Comparable {
     static func < (lhs: FrameScore, rhs: FrameScore) -> Bool {
         lhs.score < rhs.score
     }

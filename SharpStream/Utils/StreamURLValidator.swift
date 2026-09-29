@@ -118,8 +118,10 @@ struct StreamURLValidator {
                         return .success
                     case .loadFailed(let message):
                         return mapProbeError(message, isSRTListener: isSRTListener)
-                    case .endFile:
-                        return .unknownError("Playback ended before stream became active")
+                    case .endFile(let reason, let message):
+                        if reason == .stop || reason == .redirect { continue }
+                        if let message { return mapProbeError(message, isSRTListener: isSRTListener) }
+                        return .unknownError("Stream ended before it became active")
                     case .shutdown:
                         return .unknownError("Probe player shut down unexpectedly")
                     }

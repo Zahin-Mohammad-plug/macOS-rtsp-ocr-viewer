@@ -10,12 +10,11 @@ import CoreVideo
 
 protocol SmartPausePlayer: AnyObject {
     var currentTime: TimeInterval { get }
-    func suspendFrameExtractionForSnapshot()
-    func resumeFrameExtractionAfterSnapshot()
     func pause()
-    @discardableResult func seek(to time: TimeInterval) -> Bool
-    @discardableResult func seek(offset: TimeInterval) -> Bool
-    func getCurrentFrame() -> CVPixelBuffer?
+    @discardableResult func seek(to time: TimeInterval, exact: Bool) -> Bool
+    @discardableResult func seek(offset: TimeInterval, exact: Bool) -> Bool
+    /// Grab the currently decoded video frame (BGRA), off the main thread.
+    func captureFrame() async -> CVPixelBuffer?
 }
 
 enum SmartPauseFailureReason: String, Equatable, Codable {
@@ -38,10 +37,18 @@ struct SmartPauseResult {
     let statusMessage: String
     let diagnostics: SmartPauseDiagnostics
     let failureReason: SmartPauseFailureReason?
-    let ocrPixelBuffer: CVPixelBuffer?
+    /// The selected frame's pixels (what the player is now paused on).
+    let selectedPixelBuffer: CVPixelBuffer?
+    /// True when the caller should run OCR on `selectedPixelBuffer`.
+    let shouldRunOCR: Bool
 
     var isSuccess: Bool {
         failureReason == nil
+    }
+
+    /// Kept for callers that only care about the OCR input.
+    var ocrPixelBuffer: CVPixelBuffer? {
+        shouldRunOCR ? selectedPixelBuffer : nil
     }
 }
 
@@ -56,18 +63,16 @@ final class SmartPauseCoordinator {
     }
 
     private let focusScorer: FocusScorer
-    private let bufferManager: BufferManager
     private let ocrEngine: OCREngine
     private let configuration: Configuration
+    private var onDemandSequence = 1_000_000_000
 
     init(
         focusScorer: FocusScorer,
-        bufferManager: BufferManager,
         ocrEngine: OCREngine,
         configuration: Configuration = Configuration()
     ) {
         self.focusScorer = focusScorer
-        self.bufferManager = bufferManager
         self.ocrEngine = ocrEngine
         self.configuration = configuration
     }
@@ -81,9 +86,6 @@ final class SmartPauseCoordinator {
             lookbackSeconds: lookbackSeconds,
             seekMode: request.seekMode
         )
-
-        player.suspendFrameExtractionForSnapshot()
-        defer { player.resumeFrameExtractionAfterSnapshot() }
 
         let initialNow = Date()
         diagnostics.recentFrameCountBeforeRecovery = focusScorer.recentFrameCount(
@@ -99,7 +101,7 @@ final class SmartPauseCoordinator {
         )
 
         if selection == nil {
-            for attempt in 1...configuration.maxOnDemandScoreAttempts {
+            for attempt in 1...max(1, configuration.maxOnDemandScoreAttempts) {
                 diagnostics.onDemandScoreAttempts = attempt
 
                 if await scoreOnDemandCurrentFrame(player: player) {
@@ -140,7 +142,7 @@ final class SmartPauseCoordinator {
         guard let selection else {
             return failure(
                 reason: .noRecentFrames,
-                message: "Smart Pause found no recent frames in the lookback window. Play for 2-3s and retry.",
+                message: "No frames captured yet — play for a couple of seconds and try again.",
                 diagnostics: diagnostics
             )
         }
@@ -163,7 +165,7 @@ final class SmartPauseCoordinator {
         guard request.seekMode != .disabled else {
             return failure(
                 reason: .seekDisabled,
-                message: "Smart Pause selected a frame, but seek is disabled.",
+                message: "Smart Pause picked a frame, but this source can't seek.",
                 diagnostics: diagnostics,
                 selection: selection
             )
@@ -171,17 +173,20 @@ final class SmartPauseCoordinator {
 
         player.pause()
 
+        // Exact seeks so the paused picture is the frame that was scored.
         let seekSucceeded: Bool
         switch request.seekMode {
         case .absolute:
-            if let targetPlaybackTime = selection.playbackTime {
-                seekSucceeded = player.seek(to: max(0, targetPlaybackTime))
-            } else {
-                let fallbackTime = max(0, (request.currentPlaybackTime ?? player.currentTime) - selection.frameAge)
-                seekSucceeded = player.seek(to: fallbackTime)
-            }
+            let target = selection.playbackTime
+                ?? max(0, (request.currentPlaybackTime ?? player.currentTime) - selection.frameAge)
+            seekSucceeded = player.seek(to: max(0, target), exact: true)
         case .liveBuffered:
-            seekSucceeded = player.seek(offset: -selection.frameAge)
+            if let target = focusScorer.frame(sequenceNumber: selection.sequenceNumber)?.playbackTime {
+                // Stream timestamps are stable inside mpv's cache: seek straight to the frame.
+                seekSucceeded = player.seek(to: max(0, target), exact: true)
+            } else {
+                seekSucceeded = player.seek(offset: -selection.frameAge, exact: true)
+            }
         case .disabled:
             seekSucceeded = false
         }
@@ -191,33 +196,28 @@ final class SmartPauseCoordinator {
         guard seekSucceeded else {
             return failure(
                 reason: .seekRejected,
-                message: "Smart Pause selected a frame but seek was rejected by the player.",
+                message: "Smart Pause picked a frame but the player rejected the seek.",
                 diagnostics: diagnostics,
                 selection: selection
             )
         }
 
-        var ocrPixelBuffer: CVPixelBuffer?
-        if request.autoOCREnabled, ocrEngine.isEnabled {
-            if let selectedFrame = focusScorer.frame(sequenceNumber: selection.sequenceNumber),
-               let pixelBuffer = selectedFrame.pixelBuffer {
-                ocrPixelBuffer = pixelBuffer
-            } else {
-                return failure(
-                    reason: .ocrFrameMissing,
-                    message: "Smart Pause selected a frame but pixel data is unavailable for OCR.",
-                    diagnostics: diagnostics,
-                    selection: selection,
-                    seekSucceeded: true
-                )
-            }
+        let selectedPixelBuffer = focusScorer.frame(sequenceNumber: selection.sequenceNumber)?.pixelBuffer
+        let shouldRunOCR = request.autoOCREnabled && ocrEngine.isEnabled
+        if shouldRunOCR, selectedPixelBuffer == nil {
+            return failure(
+                reason: .ocrFrameMissing,
+                message: "Smart Pause picked a frame but its pixels are no longer available for OCR.",
+                diagnostics: diagnostics,
+                selection: selection,
+                seekSucceeded: true
+            )
         }
 
         let statusMessage = String(
-            format: "Selected frame: -%.1fs, score %.1f (seq %d)",
+            format: "Sharpest frame: %.1fs ago (score %.0f)",
             selection.frameAge,
-            selection.score,
-            selection.sequenceNumber
+            selection.score
         )
 
         diagnostics.failureReason = nil
@@ -228,26 +228,29 @@ final class SmartPauseCoordinator {
             statusMessage: statusMessage,
             diagnostics: diagnostics,
             failureReason: nil,
-            ocrPixelBuffer: ocrPixelBuffer
+            selectedPixelBuffer: selectedPixelBuffer,
+            shouldRunOCR: shouldRunOCR
         )
     }
 
     @MainActor
     private func scoreOnDemandCurrentFrame(player: SmartPausePlayer) async -> Bool {
-        guard let pixelBuffer = player.getCurrentFrame() else {
+        let playbackTime = player.currentTime > 0 ? player.currentTime : nil
+        guard let pixelBuffer = await player.captureFrame() else {
             return false
         }
 
-        let timestamp = Date()
-        await bufferManager.addFrame(pixelBuffer, timestamp: timestamp)
-        let sequenceNumber = await bufferManager.getCurrentSequenceNumber()
-        let playbackTime = player.currentTime > 0 ? player.currentTime : nil
-        _ = focusScorer.scoreFrame(
-            pixelBuffer,
-            timestamp: timestamp,
-            playbackTime: playbackTime,
-            sequenceNumber: sequenceNumber
-        )
+        onDemandSequence += 1
+        let sequence = onDemandSequence
+        let scorer = focusScorer
+        await Task.detached(priority: .userInitiated) {
+            _ = scorer.scoreFrame(
+                pixelBuffer,
+                timestamp: Date(),
+                playbackTime: playbackTime,
+                sequenceNumber: sequence
+            )
+        }.value
         return true
     }
 
@@ -273,7 +276,8 @@ final class SmartPauseCoordinator {
             statusMessage: message,
             diagnostics: failureDiagnostics,
             failureReason: reason,
-            ocrPixelBuffer: nil
+            selectedPixelBuffer: nil,
+            shouldRunOCR: false
         )
     }
 

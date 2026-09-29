@@ -2,332 +2,170 @@
 //  AppMenu.swift
 //  SharpStream
 //
-//  Menu bar commands and menu items
+//  Menu bar commands. Items extend the standard File/Edit/View menus instead of
+//  creating duplicate top-level menus. Space and the arrow keys are handled by
+//  AppState's key monitor (so text fields keep working); the menu items below
+//  only carry modifier shortcuts.
 //
 
 import SwiftUI
-import AppKit
-import UniformTypeIdentifiers
 
 struct AppMenu: Commands {
     @ObservedObject var appState: AppState
-    @State private var showingOpenFileDialog = false
-    @AppStorage("copyCommandMode") private var copyCommandModeRaw: String = CopyCommandMode.ocrText.rawValue
+    @Environment(\.openWindow) private var openWindow
 
-    private var copyCommandMode: CopyCommandMode {
-        CopyCommandMode(rawValue: copyCommandModeRaw) ?? .ocrText
-    }
-    
+    private var hasPlayer: Bool { appState.player != nil }
+    private var seekMode: SeekMode { appState.streamManager.seekMode }
+
     var body: some Commands {
-        // File Menu
-        CommandMenu("File") {
-            // Open File
-            Button("Open File...") {
-                openFile()
+        SidebarCommands()
+
+        CommandGroup(replacing: .newItem) {
+            Button("New Stream…") {
+                NotificationCenter.default.post(name: .showNewStreamSheet, object: nil)
             }
-            .keyboardShortcut("o", modifiers: .command)
-            
-            Divider()
-            
-            // Recent Streams
+            .keyboardShortcut("n")
+
+            Button("Open File…") {
+                appState.presentOpenFilePanel()
+            }
+            .keyboardShortcut("o")
+
+            Button("Open URL from Clipboard") {
+                appState.pasteStreamURL()
+            }
+            .keyboardShortcut("v", modifiers: [.command, .shift])
+
             Menu("Open Recent") {
-                let recentStreams = appState.streamDatabase.getRecentStreams(limit: 10)
-                if recentStreams.isEmpty {
-                    Text("No recent streams")
-                        .disabled(true)
+                let recents = appState.streamDatabase.getRecentStreams(limit: 10)
+                if recents.isEmpty {
+                    Text("No Recent Streams")
                 } else {
-                    ForEach(recentStreams) { recent in
-                        Button(recent.url) {
-                            openRecentStream(recent.url)
+                    ForEach(recents) { recent in
+                        Button(StreamURLRedactor.redacted(recent.url)) {
+                            appState.connect(urlString: recent.url)
                         }
                     }
-                    
                     Divider()
-                    
-                    Button("Clear Recent") {
+                    Button("Clear Menu") {
                         appState.streamDatabase.clearRecentStreams()
                         NotificationCenter.default.post(name: .recentStreamsUpdated, object: nil)
                     }
                 }
             }
-            
-            Divider()
-            
-            // Saved Streams (all saved streams)
+
             Menu("Saved Streams") {
-                let allStreams = appState.streamDatabase.getAllStreams()
-                if allStreams.isEmpty {
-                    Text("No saved streams")
-                        .disabled(true)
+                let saved = appState.streamDatabase.getAllStreams()
+                if saved.isEmpty {
+                    Text("No Saved Streams")
                 } else {
-                    ForEach(allStreams) { stream in
-                        Button(stream.name) {
-                            appState.streamManager.connect(to: stream)
-                        }
+                    ForEach(saved) { stream in
+                        Button(stream.name) { appState.connect(to: stream) }
                     }
                 }
             }
-            
-            Divider()
-            
-            // New Stream
-            Button("New Stream...") {
-                showNewStreamDialog()
-            }
-            .keyboardShortcut("n", modifiers: .command)
+        }
 
-            Button("Save Current Stream...") {
-                saveCurrentStream()
+        CommandGroup(replacing: .saveItem) {
+            Button("Save Stream to Library…") {
+                NotificationCenter.default.post(name: .saveCurrentStreamRequested, object: nil)
             }
-            .disabled(appState.currentStream == nil)
-            
+            .disabled(appState.streamManager.currentStream == nil)
+
+            Button("Disconnect") {
+                appState.disconnect()
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .disabled(!hasPlayer)
+
             Divider()
-            
-            // Export options
-            Menu("Export") {
-                Button("Save Current Frame...") {
-                    exportCurrentFrame()
-                }
-                .keyboardShortcut("e", modifiers: .command)
-                
-                Button("Export OCR Text...") {
-                    exportOCRText()
-                }
-                
-                Button("Export Frame with OCR...") {
-                    exportFrameWithOCR()
-                }
-            }
-            
-            Divider()
-            
-            // Close
-            Button("Close") {
-                NSApplication.shared.keyWindow?.close()
-            }
-            .keyboardShortcut("w", modifiers: .command)
+
+            Button("Save Frame As…") { appState.saveFrameAs() }
+                .keyboardShortcut("e")
+                .disabled(!hasPlayer)
+            Button("Quick Save Frame") { appState.quickSaveFrame() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(!hasPlayer)
+            Button("Export Recognized Text…") { appState.exportOCRText() }
+                .disabled(appState.currentOCRResult == nil)
+            Button("Export Frame with Text Boxes…") { appState.exportFrameWithOCR() }
+                .disabled(!hasPlayer)
         }
-        
-        // Edit Menu
-        CommandMenu("Edit") {
-            Button("Copy") {
-                copyToClipboard()
-            }
-            .keyboardShortcut("c", modifiers: .command)
-            
-            Button("Paste Stream URL") {
-                pasteStreamURL()
-            }
-            .keyboardShortcut("v", modifiers: [.command, .shift])
-        }
-        
-        // View Menu
-        CommandMenu("View") {
-            Button("Toggle Sidebar") {
-                toggleSidebar()
-            }
-            .keyboardShortcut("s", modifiers: [.command, .control])
-            
+
+        CommandGroup(after: .pasteboard) {
             Divider()
+            Button("Copy Recognized Text") { appState.copyOCRText() }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(!hasPlayer)
+            Button("Copy Frame") { appState.copyFrame() }
+                .keyboardShortcut("c", modifiers: [.command, .option])
+                .disabled(!hasPlayer)
+        }
+
+        CommandGroup(after: .sidebar) {
+            Button(appState.showOCRInspector ? "Hide Text Panel" : "Show Text Panel") {
+                appState.showOCRInspector.toggle()
+            }
+            .keyboardShortcut("t", modifiers: [.command, .option])
 
             Button("Show Statistics") {
-                showStatisticsWindow()
+                openWindow(id: "statistics")
             }
-            .keyboardShortcut("i", modifiers: [.command, .shift])
-
+            .keyboardShortcut("i", modifiers: [.command, .option])
             Divider()
-            
-            Button("Enter Fullscreen") {
-                enterFullscreen()
-            }
-            .keyboardShortcut("f", modifiers: [.command, .control])
         }
-        
-        // Playback Menu
+
         CommandMenu("Playback") {
-            Button("Play/Pause") {
-                togglePlayPause()
-            }
-            .keyboardShortcut(.space, modifiers: [])
-            
-            Divider()
-            
-            Button("Rewind 10s") {
-                seekBackward()
-            }
-            .keyboardShortcut(.leftArrow, modifiers: .command)
-            
-            Button("Forward 10s") {
-                seekForward()
-            }
-            .keyboardShortcut(.rightArrow, modifiers: .command)
-            
-            Divider()
-            
-            Button("Frame Backward") {
-                stepFrameBackward()
-            }
-            .keyboardShortcut(.leftArrow, modifiers: [])
-            
-            Button("Frame Forward") {
-                stepFrameForward()
-            }
-            .keyboardShortcut(.rightArrow, modifiers: [])
-            
-            Divider()
-            
-            Button("Smart Pause") {
-                performSmartPause()
-            }
-            .keyboardShortcut("s", modifiers: .command)
+            Button("Play / Pause   (Space)") { appState.togglePlayPause() }
+                .disabled(!hasPlayer)
 
-            Button("Smart Pause (Cmd+Space)") {
-                performSmartPause()
-            }
-            .keyboardShortcut(.space, modifiers: [.command])
-            
             Divider()
-            
-            Menu("Playback Speed") {
-                Button("0.25x") { setSpeed(0.25) }
-                Button("0.5x") { setSpeed(0.5) }
-                Button("1x") { setSpeed(1.0) }
-                Button("1.5x") { setSpeed(1.5) }
-                Button("2x") { setSpeed(2.0) }
-            }
-        }
-        
-        // Window Menu
-        CommandGroup(replacing: .windowSize) {
-            Button("Zoom") {
-                zoomWindow()
-            }
-        }
-        
-        CommandGroup(after: .windowArrangement) {
-            Button("Minimize") {
-                NSApplication.shared.keyWindow?.miniaturize(nil)
-            }
-            .keyboardShortcut("m", modifiers: .command)
-        }
-    }
-    
-    // MARK: - Actions
-    
-    private func openFile() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.movie, .video, .mpeg4Movie, .quickTimeMovie, .avi]
-        panel.message = "Select a video file to open"
-        
-        if panel.runModal() == .OK {
-            guard let url = panel.url else { return }
-            
-            let fileURL = url.absoluteString
-            let protocolType = StreamProtocol.detect(from: fileURL)
-            let stream = SavedStream(name: url.lastPathComponent, url: fileURL, protocolType: protocolType)
-            
-            appState.streamManager.connect(to: stream)
-        }
-    }
-    
-    private func openRecentStream(_ url: String) {
-        let protocolType = StreamProtocol.detect(from: url)
-        let stream = SavedStream(name: "Recent Stream", url: url, protocolType: protocolType)
-        appState.streamManager.connect(to: stream)
-    }
-    
-    private func showNewStreamDialog() {
-        // This would show the stream configuration sheet
-        // For now, trigger via notification or state
-        NotificationCenter.default.post(name: NSNotification.Name("ShowNewStreamDialog"), object: nil)
-    }
 
-    private func saveCurrentStream() {
-        NotificationCenter.default.post(name: .saveCurrentStreamRequested, object: nil)
-    }
-    
-    private func exportCurrentFrame() {
-        // Export current frame
-        NotificationCenter.default.post(name: NSNotification.Name("ExportCurrentFrame"), object: nil)
-    }
-    
-    private func exportOCRText() {
-        NotificationCenter.default.post(name: NSNotification.Name("ExportOCRText"), object: nil)
-    }
-    
-    private func exportFrameWithOCR() {
-        NotificationCenter.default.post(name: NSNotification.Name("ExportFrameWithOCR"), object: nil)
-    }
-    
-    private func copyToClipboard() {
-        // Copy current OCR text or frame
-        switch copyCommandMode {
-        case .ocrText:
-            NotificationCenter.default.post(name: .copyOCRTextNow, object: nil)
-        case .frame:
-            NotificationCenter.default.post(name: .copyFrameNow, object: nil)
+            Button("Back 10 Seconds") { appState.seek(by: -10) }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                .disabled(!seekMode.allowsRelativeSeek)
+            Button("Forward 10 Seconds") { appState.seek(by: 10) }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .disabled(!seekMode.allowsRelativeSeek)
+            Button("Previous Frame   ( , )") { appState.stepFrame(backward: true) }
+                .disabled(seekMode != .absolute)
+            Button("Next Frame   ( . )") { appState.stepFrame(backward: false) }
+                .disabled(seekMode != .absolute)
+            Button("Jump to Live") { appState.jumpToLive() }
+                .keyboardShortcut("l")
+                .disabled(seekMode != .liveBuffered)
+
+            Divider()
+
+            Button("Smart Pause") { appState.smartPause() }
+                .keyboardShortcut("s")
+                .disabled(!hasPlayer)
+            Button("Recognize Text") { appState.recognizeText() }
+                .keyboardShortcut("r")
+                .disabled(!hasPlayer)
+
+            Divider()
+
+            Menu("Speed") {
+                ForEach([0.25, 0.5, 1.0, 1.5, 2.0], id: \.self) { speed in
+                    Button(PlaybackSpeed.label(speed)) { appState.setSpeed(speed) }
+                }
+            }
+            .disabled(!hasPlayer)
         }
     }
-    
-    private func pasteStreamURL() {
-        NotificationCenter.default.post(name: NSNotification.Name("PasteStreamURL"), object: nil)
-    }
-    
-    private func toggleSidebar() {
-        NotificationCenter.default.post(name: NSNotification.Name("ToggleSidebar"), object: nil)
-    }
+}
 
-    private func showStatisticsWindow() {
-        NotificationCenter.default.post(name: .showStatisticsWindowRequested, object: nil)
-    }
-    
-    private func enterFullscreen() {
-        NSApplication.shared.keyWindow?.toggleFullScreen(nil)
-    }
-    
-    private func togglePlayPause() {
-        NotificationCenter.default.post(name: NSNotification.Name("TogglePlayPause"), object: nil)
-    }
-    
-    private func seekBackward() {
-        NotificationCenter.default.post(name: NSNotification.Name("SeekBackward"), object: -10)
-    }
-    
-    private func seekForward() {
-        NotificationCenter.default.post(name: NSNotification.Name("SeekForward"), object: 10)
-    }
-    
-    private func stepFrameBackward() {
-        // Step frame backward - will be implemented when player is integrated
-        NotificationCenter.default.post(name: NSNotification.Name("StepFrameBackward"), object: nil)
-    }
-    
-    private func stepFrameForward() {
-        // Step frame forward - will be implemented when player is integrated
-        NotificationCenter.default.post(name: NSNotification.Name("StepFrameForward"), object: nil)
-    }
-    
-    private func performSmartPause() {
-        NotificationCenter.default.post(name: NSNotification.Name("SmartPause"), object: nil)
-    }
-    
-    private func setSpeed(_ speed: Double) {
-        // Set playback speed - will be implemented when player is integrated
-        NotificationCenter.default.post(name: NSNotification.Name("SetPlaybackSpeed"), object: speed)
-    }
-    
-    private func zoomWindow() {
-        NSApplication.shared.keyWindow?.zoom(nil)
+enum PlaybackSpeed {
+    static let options: [Double] = [0.25, 0.5, 1.0, 1.5, 2.0]
+
+    static func label(_ speed: Double) -> String {
+        speed == floor(speed) ? "\(Int(speed))×" : "\(speed)×"
     }
 }
 
 extension Notification.Name {
     static let saveCurrentStreamRequested = Notification.Name("SaveCurrentStreamRequested")
     static let savedStreamsUpdated = Notification.Name("SavedStreamsUpdated")
-    static let copyOCRTextNow = Notification.Name("CopyOCRTextNow")
-    static let copyFrameNow = Notification.Name("CopyFrameNow")
-    static let quickSaveFrame = Notification.Name("QuickSaveFrame")
-    static let showStatisticsWindowRequested = Notification.Name("ShowStatisticsWindowRequested")
+    static let showNewStreamSheet = Notification.Name("ShowNewStreamSheet")
 }

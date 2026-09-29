@@ -52,6 +52,48 @@ final class FocusScorerTests: XCTestCase {
         XCTAssertGreaterThan(score.score, 0, "Sobel score should be positive")
     }
     
+    func testRetainsOnlyFramesThatCanStillWin() {
+        // Regression: the scorer used to keep 1000 full-resolution frames.
+        let now = Date()
+        let sharp = createCheckerboardPixelBuffer(width: 320, height: 240)
+        let soft = createSolidPixelBuffer(width: 320, height: 240, value: 120)
+
+        // 40 soft frames followed by one sharp frame: every soft frame is
+        // beaten by a newer, sharper frame and must be released.
+        for index in 0..<40 {
+            focusScorer.scoreFrame(soft, timestamp: now.addingTimeInterval(-5 + Double(index) * 0.1), sequenceNumber: index)
+        }
+        focusScorer.scoreFrame(sharp, timestamp: now, sequenceNumber: 100)
+
+        XCTAssertEqual(focusScorer.frame(sequenceNumber: 100)?.sequenceNumber, 100)
+        XCTAssertNil(focusScorer.frame(sequenceNumber: 10))
+        XCTAssertEqual(focusScorer.retainedFrameBytes(), CVPixelBufferGetDataSize(sharp))
+        XCTAssertEqual(focusScorer.recentFrameCount(in: 10, now: now), 41, "Samples are still counted for stats")
+    }
+
+    func testDropsCandidatesOutsideRetentionWindow() {
+        let now = Date()
+        let sharp = createCheckerboardPixelBuffer(width: 320, height: 240)
+        let soft = createSolidPixelBuffer(width: 320, height: 240, value: 120)
+        focusScorer.scoreFrame(sharp, timestamp: now.addingTimeInterval(-30), sequenceNumber: 1)
+        focusScorer.scoreFrame(soft, timestamp: now, sequenceNumber: 2)
+
+        XCTAssertNil(focusScorer.frame(sequenceNumber: 1))
+        XCTAssertEqual(focusScorer.findBestFrame(in: 5, now: now)?.sequenceNumber, 2)
+    }
+
+    func testMetricsRankSharpAboveSoft() {
+        let sharp = createCheckerboardPixelBuffer(width: 1920, height: 1080)
+        let soft = createSolidPixelBuffer(width: 1920, height: 1080, value: 120)
+        for algorithm in FocusAlgorithm.allCases {
+            XCTAssertGreaterThan(
+                SharpnessMetrics.score(sharp, algorithm: algorithm),
+                SharpnessMetrics.score(soft, algorithm: algorithm),
+                "\(algorithm) should rank the detailed frame higher"
+            )
+        }
+    }
+
     func testFindBestFrame() {
         let pixelBuffer1 = createTestPixelBuffer(width: 640, height: 480)
         let pixelBuffer2 = createTestPixelBuffer(width: 640, height: 480)

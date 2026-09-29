@@ -25,7 +25,7 @@ struct StreamListView: View {
                             connectToURL(recent.url)
                         }) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(recent.url)
+                                Text(StreamURLRedactor.redacted(recent.url))
                                     .font(.caption)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
@@ -93,7 +93,7 @@ struct StreamListView: View {
             loadStreams()
             loadRecentStreams()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowNewStreamDialog"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .showNewStreamSheet)) { _ in
             sheetStream = nil
             sheetUsesURLUpsert = true
             showStreamSheet = true
@@ -120,13 +120,11 @@ struct StreamListView: View {
     }
 
     private func connectToStream(_ stream: SavedStream) {
-        appState.streamManager.connect(to: stream)
+        appState.connect(to: stream)
     }
 
     private func connectToURL(_ url: String) {
-        let protocolType = StreamProtocol.detect(from: url)
-        let stream = SavedStream(name: "Quick Stream", url: url, protocolType: protocolType)
-        connectToStream(stream)
+        appState.connect(urlString: url, name: existingSavedName(for: url) ?? defaultStreamName(for: url))
     }
 
     private func streamFromRecent(_ recent: RecentStream) -> SavedStream {
@@ -179,7 +177,7 @@ struct StreamListView: View {
             loadStreams()
             loadRecentStreams()
         } catch {
-            print("Error saving stream: \(error)")
+            appState.showStatus("Unable to save stream: \(error.localizedDescription)", isError: true)
         }
     }
 
@@ -189,7 +187,7 @@ struct StreamListView: View {
             NotificationCenter.default.post(name: .savedStreamsUpdated, object: nil)
             loadStreams()
         } catch {
-            print("Error deleting stream: \(error)")
+            appState.showStatus("Unable to delete stream: \(error.localizedDescription)", isError: true)
         }
     }
 }
@@ -205,7 +203,7 @@ struct StreamRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(stream.name)
                     .font(.headline)
-                Text(stream.url)
+                Text(StreamURLRedactor.redacted(stream.url))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)

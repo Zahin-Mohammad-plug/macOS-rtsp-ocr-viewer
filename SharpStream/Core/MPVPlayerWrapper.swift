@@ -2,2072 +2,721 @@
 //  MPVPlayerWrapper.swift
 //  SharpStream
 //
-//  Swift wrapper around libmpv (MPVKit) for video playback and frame extraction
+//  Swift wrapper around libmpv (MPVKit) for playback control and frame capture.
+//
+//  Threading model
+//  - Playback commands and @Published state live on the main thread.
+//  - libmpv events are pumped on a dedicated thread and forwarded to main.
+//  - Frame capture (`screenshot-raw`) runs on `captureQueue`, never on main.
+//  - Video is drawn through libmpv's render API by MPVOpenGLLayer, which owns
+//    the render context. Loading is deferred until that context exists.
+//  - `cleanup()` stops both background paths and frees the render context
+//    before the handle is destroyed; the (potentially slow)
+//    `mpv_terminate_destroy` runs off the main thread.
 //
 
 import Foundation
 import CoreVideo
-import CoreMedia
 import AppKit
 import Combine
-import os.log
-
-#if canImport(Libmpv)
+import QuartzCore
 import Libmpv
-#endif
+
+enum MPVEndFileReason: Equatable {
+    case eof
+    case stop
+    case quit
+    case error
+    case redirect
+    case unknown
+}
 
 enum MPVPlayerEvent {
     case fileLoaded
-    case endFile
+    case endFile(reason: MPVEndFileReason, message: String?)
     case shutdown
     case loadFailed(String)
 }
 
-/// Swift wrapper around libmpv C API for video playback and frame extraction
-/// 
-/// This class provides a clean, type-safe interface to MPVKit/libmpv for:
-/// - Multi-protocol stream playback (RTSP, SRT, UDP, HLS, etc.)
-/// - Frame extraction for buffering and OCR
-/// - Playback control (play, pause, seek, speed, volume)
-/// - Stream metadata extraction
-///
-/// Thread Safety: All player operations must be called from the main thread.
-/// Frame callbacks are dispatched to a background queue for processing.
-class MPVPlayerWrapper: ObservableObject {
-    
-    // MARK: - Properties
-    
-    private var mpvHandle: OpaquePointer?
-    private var renderContext: OpaquePointer?
-    private var frameCallback: ((CVPixelBuffer, Date, TimeInterval?) -> Void)?
-    private var windowView: Any? // Store view/layer for later wid setup
-    private var windowIDSet: Bool = false // Track if wid was set
-    private var isInitialized: Bool = false // Track if mpv_initialize was called
-    private var pendingStreamURL: String? // Store stream URL if loadStream called before init
-    private let isHeadless: Bool
+final class MPVPlayerWrapper: ObservableObject {
+
+    // MARK: - Published playback state (main thread)
+
+    @Published private(set) var isPlaying: Bool = false
+    /// Playback position, published at ~10 Hz granularity to keep SwiftUI cheap.
+    @Published private(set) var currentTime: TimeInterval = 0
+    @Published private(set) var duration: TimeInterval = 0
+    @Published private(set) var playbackSpeed: Double = 1.0
+    @Published private(set) var volume: Double = 1.0
+    @Published private(set) var isBuffering: Bool = false
+    /// Display size of the decoded video (aspect-corrected), when known.
+    @Published private(set) var videoSize: CGSize?
+
     var eventHandler: ((MPVPlayerEvent) -> Void)?
-    
-    private let frameExtractionQueue = DispatchQueue(label: "com.sharpstream.frame-extraction", qos: .userInitiated)
-    private var frameExtractionTimer: Timer?
-    private var frameExtractionInterval: TimeInterval = 0.25 // 4 FPS baseline for Smart Pause selection quality
-    private var frameExtractionInFlight = false
-    private var frameExtractionSuspendedForSnapshot = false
-    private var lastScreenshotCommandFailureAt: Date?
-    private let screenshotFailureRetryCooldown: TimeInterval = 1.0
-    private let eventLoopStateQueue = DispatchQueue(label: "com.sharpstream.mpv-event-loop-state")
-    private let eventLoopGroup = DispatchGroup()
-    private var eventLoopRunning = false
-    
-    @Published var isPlaying: Bool = false
-    @Published var currentTime: TimeInterval = 0
-    @Published var duration: TimeInterval = 0
-    @Published var playbackSpeed: Double = 1.0
-    @Published var volume: Double = 1.0
-    
-    private var metadataUpdateTimer: Timer?
-    private var timeUpdateErrorCount = 0 // Track errors for logging
-    private var eventLogCount = 0 // Track event logging to avoid spam
-    private var lastSeekTime: TimeInterval = -1 // Track last seek attempt to detect failures
+    /// Set by the video layer; called on main right before libmpv is destroyed
+    /// so the render context can be freed first (required by libmpv).
+    var willDestroyHandle: (() -> Void)?
+
+    // MARK: - libmpv state
+
+    /// Owned libmpv handle. Accessed from main, the event thread and `captureQueue`;
+    /// libmpv's client API is thread-safe. Only `cleanup()` clears it, after the
+    /// background users have been stopped.
+    private(set) var mpvHandle: OpaquePointer?
+    private let isHeadless: Bool
+    private var isInitialized = false
+    private var isRenderReady = false
+    private var pendingStreamURL: String?
     private var liveBufferSettings: LiveBufferSettings?
-    
-    // MARK: - Initialization
-    
-    private static let logger = Logger(subsystem: "com.sharpstream", category: "mpv")
-    
+    private var rawTimePosition: TimeInterval = 0
+
+    private let eventThreadLock = NSLock()
+    private var eventThreadRunning = false
+    private let eventThreadExited = DispatchSemaphore(value: 0)
+
+    // MARK: - Frame capture state
+
+    private let captureQueue = DispatchQueue(label: "com.sharpstream.frame-capture", qos: .userInitiated)
+    // The members below are only touched on `captureQueue`.
+    private var captureTimer: DispatchSourceTimer?
+    private var captureInterval: TimeInterval = 0.25
+    private var frameCallback: ((CVPixelBuffer, Date, TimeInterval?) -> Void)?
+    private var capturePaused = true
+    private var captureShutDown = false
+    private var pixelBufferPool: CVPixelBufferPool?
+    private var poolSize: (width: Int, height: Int) = (0, 0)
+    private let captureMetricsLock = NSLock()
+    private var captureCostEWMA: TimeInterval = 0     // guarded by captureMetricsLock
+    private var publishedCaptureInterval: TimeInterval = 0.25 // guarded by captureMetricsLock
+
+    private static let observedTimePos: UInt64 = 1
+    private static let observedDuration: UInt64 = 2
+    private static let observedPause: UInt64 = 3
+    private static let observedSpeed: UInt64 = 4
+    private static let observedVolume: UInt64 = 5
+    private static let observedPausedForCache: UInt64 = 6
+    private static let observedVideoParams: UInt64 = 7
+
+    // MARK: - Lifecycle
+
     init(headless: Bool = false) {
         self.isHeadless = headless
-        Self.logger.info("🚀 MPVPlayerWrapper.init() called")
-        print("🚀 MPVPlayerWrapper.init() called")
-        print("🔍 Checking MPVKit availability...")
-        Self.logger.info("🔍 Checking MPVKit availability...")
-        
-        #if canImport(Libmpv)
-        Self.logger.info("✅ canImport(Libmpv) = TRUE - Module found at compile time")
-        print("✅ canImport(Libmpv) = TRUE - Module found at compile time")
-        #else
-        Self.logger.error("❌ canImport(Libmpv) = FALSE - COMPILATION ERROR")
-        print("❌ canImport(Libmpv) = FALSE")
-        print("   Swift compiler cannot find Libmpv module")
-        print("   This is a compile-time check - module must be available to compiler")
-        #endif
-        
-        setupMPV()
+        createHandle()
+        completeInitialization()
     }
-    
+
     deinit {
         cleanup()
     }
-    
-    // MARK: - Setup & Cleanup
-    
-    private func setupMPV() {
-        print("🔧 MPVPlayerWrapper.setupMPV() called")
 
-        #if canImport(Libmpv)
-        print("✅ MPVKit is available")
-
-        // Create mpv instance
-        print("🎮 Creating mpv instance...")
-        mpvHandle = mpv_create()
-        guard let handle = mpvHandle else {
-            print("❌ ERROR: Failed to create mpv instance")
+    private func createHandle() {
+        guard let handle = mpv_create() else {
+            print("❌ mpv_create failed")
             return
         }
-        print("✅ MPV instance created")
+        mpvHandle = handle
 
-        // Set options BEFORE initialization
-        print("⚙️ Setting MPV options...")
-        mpv_set_option_string(handle, "hwdec", "auto-safe")
-        if isHeadless {
-            // Probe mode for validation/testing where no rendering view exists.
-            mpv_set_option_string(handle, "vo", "null")
-            mpv_set_option_string(handle, "audio", "no")
-        } else {
-            // Use gpu-next with moltenvk for Metal/Vulkan rendering (matches demo app)
-            mpv_set_option_string(handle, "vo", "gpu-next")
-            mpv_set_option_string(handle, "gpu-api", "vulkan")
-            mpv_set_option_string(handle, "gpu-context", "moltenvk")
-            // Audio configuration - explicit CoreAudio output for macOS
-            mpv_set_option_string(handle, "audio", "yes")
-            mpv_set_option_string(handle, "ao", "coreaudio")
-        }
+        mpv_set_option_string(handle, "terminal", "no")
+        mpv_set_option_string(handle, "msg-level", "all=warn")
+        mpv_set_option_string(handle, "idle", "yes")
+        // Stay on the last frame at EOF instead of unloading the file, so files
+        // remain seekable/OCR-able when they finish.
+        mpv_set_option_string(handle, "keep-open", "yes")
+        mpv_set_option_string(handle, "input-default-bindings", "no")
+        mpv_set_option_string(handle, "input-vo-keyboard", "no")
+        mpv_set_option_string(handle, "osc", "no")
+        // No Lua scripts (ytdl hook, stats, …): not needed and slow startup.
+        mpv_set_option_string(handle, "load-scripts", "no")
+        mpv_set_option_string(handle, "ytdl", "no")
+        // Hardware decode with copy-back. Zero-copy VideoToolbox frames can't be
+        // read back by `screenshot-raw` with the render API, which silently broke
+        // Smart Pause / OCR capture. Copy-back costs one GPU→RAM copy per frame
+        // (cheap on unified memory) and lets capture work even when the window
+        // is hidden or occluded.
+        mpv_set_option_string(handle, "hwdec", "videotoolbox-copy")
         mpv_set_option_string(handle, "network-timeout", "10")
         mpv_set_option_string(handle, "rtsp-transport", "tcp")
-        mpv_set_option_string(handle, "video", "yes")
-        print("✅ MPV options set")
+        // Back-seeking inside the demuxer cache is what powers the live DVR.
+        mpv_set_option_string(handle, "demuxer-seekable-cache", "yes")
 
-        // IMPORTANT: Don't initialize yet - wait for window/view to be set
-        // This ensures wid is set BEFORE mpv_initialize
-
-        #else
-        print("⚠️ WARNING: Libmpv not available - using placeholder implementation")
-        print("   Make sure MPVKit package is added and Libmpv is accessible")
-        #endif
+        if isHeadless {
+            mpv_set_option_string(handle, "vo", "null")
+            mpv_set_option_string(handle, "audio", "no")
+            isRenderReady = true
+        } else {
+            // Frames are pulled through the render API by MPVOpenGLLayer.
+            mpv_set_option_string(handle, "vo", "libmpv")
+            mpv_set_option_string(handle, "ao", "coreaudio")
+        }
     }
 
-    /// Initialize MPV with the render context set up
-    /// Called from setWindowID after window/view is available
-    private func completeMPVInitialization() {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle, !isInitialized else {
-            if isInitialized {
-                print("⏭️ MPV already initialized")
-            } else {
-                print("❌ ERROR: MPV handle not available for initialization")
-            }
-            return
+    /// Called by the video layer once its render context exists.
+    func renderContextDidAttach() {
+        guard !isRenderReady else { return }
+        isRenderReady = true
+        if let pendingURL = pendingStreamURL {
+            pendingStreamURL = nil
+            loadStream(url: pendingURL)
         }
+    }
 
-        print("🚀 Initializing MPV...")
+    /// Kept for the headless connection probe.
+    @discardableResult
+    func initializeForHeadlessIfNeeded() -> Bool {
+        isInitialized
+    }
+
+    private func completeInitialization() {
+        guard let handle = mpvHandle, !isInitialized else { return }
+
         let status = mpv_initialize(handle)
-        if status < 0 {
-            let errorString = mpv_error_string(status)
-            let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
-            print("❌ ERROR: MPV initialization failed")
-            print("   Status code: \(status)")
-            print("   Error: \(error)")
-            DispatchQueue.main.async { [weak self] in
-                self?.eventHandler?(.loadFailed("MPV initialization failed: \(error)"))
-            }
+        guard status >= 0 else {
+            reportFailure("MPV initialization failed: \(Self.errorString(status))")
             mpv_destroy(handle)
             mpvHandle = nil
             return
         }
-
         isInitialized = true
-        print("✅ MPV initialized successfully")
 
-        // Set up event handling
-        setupEventHandling()
+        mpv_observe_property(handle, Self.observedTimePos, "time-pos", MPV_FORMAT_DOUBLE)
+        mpv_observe_property(handle, Self.observedDuration, "duration", MPV_FORMAT_DOUBLE)
+        mpv_observe_property(handle, Self.observedPause, "pause", MPV_FORMAT_FLAG)
+        mpv_observe_property(handle, Self.observedSpeed, "speed", MPV_FORMAT_DOUBLE)
+        mpv_observe_property(handle, Self.observedVolume, "volume", MPV_FORMAT_DOUBLE)
+        mpv_observe_property(handle, Self.observedPausedForCache, "paused-for-cache", MPV_FORMAT_FLAG)
+        mpv_observe_property(handle, Self.observedVideoParams, "video-params/aspect", MPV_FORMAT_DOUBLE)
 
-        // Start metadata update timer
-        startMetadataUpdateTimer()
+        startEventThread(handle: handle)
         applyLiveBufferSettingsIfPossible()
-        print("✅ MPVPlayerWrapper initialization complete")
-
-        // If a stream was queued, load it now
-        if let pendingURL = pendingStreamURL {
-            pendingStreamURL = nil // Clear pending to avoid reload
-            loadStream(url: pendingURL)
-        }
-        #endif
     }
 
-    /// Headless mode can initialize without a rendering surface.
-    /// Returns false when initialization is unavailable/failed.
-    @discardableResult
-    func initializeForHeadlessIfNeeded() -> Bool {
-        #if canImport(Libmpv)
-        guard isHeadless else { return isInitialized }
-        if !isInitialized {
-            completeMPVInitialization()
-        }
-        return isInitialized
-        #else
-        return false
-        #endif
-    }
-    
-    /// Set the window ID for video rendering
-    /// IMPORTANT: This must be called BEFORE mpv_initialize() for proper setup
-    /// This function sets the wid and then completes initialization
-    /// Supports both NSView (for Cocoa) and CAMetalLayer (for Metal/Vulkan)
-    func setWindowID(_ layerOrView: Any) {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else {
-            print("⚠️ setWindowID: MPV handle not available")
-            return
+    /// Stops capture and the event thread, then destroys libmpv asynchronously.
+    /// Safe to call more than once.
+    func cleanup() {
+        eventHandler = nil
+        captureQueue.sync {
+            captureShutDown = true
+            captureTimer?.cancel()
+            captureTimer = nil
+            frameCallback = nil
         }
 
-        // If already initialized and window ID is set, skip
-        if isInitialized && windowIDSet {
-            return
-        }
-        
-        // CRITICAL: wid must be set BEFORE mpv_initialize
-        // If MPV is already initialized, we cannot set wid - this will fail
-        // The view must be created before initialization completes
-        if isInitialized {
-            print("❌ ERROR: Cannot set window ID after MPV initialization")
-            print("   Window ID must be set before mpv_initialize()")
-            print("   The view should be created before the stream is loaded")
-            return
-        }
-
-        // Convert layer/view to pointer for wid
-        let pointer: UnsafeMutableRawPointer
-        let typeName: String
-        if let metalLayer = layerOrView as? CAMetalLayer {
-            pointer = Unmanaged.passUnretained(metalLayer).toOpaque()
-            typeName = "CAMetalLayer"
-        } else if let view = layerOrView as? NSView {
-            pointer = Unmanaged.passUnretained(view).toOpaque()
-            typeName = "NSView"
-        } else {
-            print("❌ ERROR: setWindowID called with unsupported type: \(type(of: layerOrView))")
-            return
-        }
-
-        let widValue = Int64(bitPattern: UInt64(Int(bitPattern: pointer)))
-        var wid = widValue
-        let result = mpv_set_option(handle, "wid", MPV_FORMAT_INT64, &wid)
-
-        if result < 0 {
-            let errorString = mpv_error_string(result)
-            let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
-            print("❌ ERROR: Failed to set window ID: \(error) (code: \(result))")
-        } else {
-            windowIDSet = true
-            windowView = layerOrView
-            print("✅ Window ID set successfully for video rendering (\(typeName))")
-
-            // If not yet initialized, complete the initialization now
-            if !isInitialized {
-                completeMPVInitialization()
-            }
-        }
-        #endif
-    }
-    
-    private func setupEventHandling() {
-        #if canImport(Libmpv)
         guard let handle = mpvHandle else { return }
-        
-        // Observe properties for state changes
-        mpv_observe_property(handle, 0, "playback-time", MPV_FORMAT_DOUBLE)
-        mpv_observe_property(handle, 0, "duration", MPV_FORMAT_DOUBLE)
-        mpv_observe_property(handle, 0, "pause", MPV_FORMAT_FLAG)
-        mpv_observe_property(handle, 0, "speed", MPV_FORMAT_DOUBLE)
-        mpv_observe_property(handle, 0, "volume", MPV_FORMAT_DOUBLE)
+        mpvHandle = nil
 
-        let shouldStart = eventLoopStateQueue.sync { () -> Bool in
-            if eventLoopRunning {
-                return false
-            }
-            eventLoopRunning = true
-            return true
-        }
-        guard shouldStart else { return }
-
-        // Start event loop
-        eventLoopGroup.enter()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            defer {
-                self?.eventLoopStateQueue.sync {
-                    self?.eventLoopRunning = false
-                }
-                self?.eventLoopGroup.leave()
-            }
-            self?.eventLoop()
-        }
-        #endif
-    }
-    
-    private func eventLoop() {
-        guard let handle = mpvHandle else { return }
-        
-        // Event loop runs on background thread
-        while shouldContinueEventLoop() {
-            guard let event = mpv_wait_event(handle, 0.1) else { continue }
-            #if canImport(Libmpv)
-            let eventId = event.pointee.event_id
-            if eventId == MPV_EVENT_SHUTDOWN {
-                DispatchQueue.main.async { [weak self] in
-                    self?.eventHandler?(.shutdown)
-                }
-                break
-            }
-            
-            handleEvent(event.pointee)
-            #else
-            // Placeholder for when MPVKit is not available
-            break
-            #endif
-        }
-    }
-
-    @discardableResult
-    private func stopEventLoop(waitForExit: Bool) -> Bool {
-        let wasRunning = eventLoopStateQueue.sync { () -> Bool in
-            let running = eventLoopRunning
-            eventLoopRunning = false
+        let wasRunning = eventThreadLock.withLock { () -> Bool in
+            let running = eventThreadRunning
+            eventThreadRunning = false
             return running
         }
-        guard wasRunning else { return true }
-
-        #if canImport(Libmpv)
-        if let handle = mpvHandle {
+        if wasRunning {
             mpv_wakeup(handle)
+            if eventThreadExited.wait(timeout: .now() + 2.0) == .timedOut {
+                // The event thread is stuck inside libmpv; leaking the handle is
+                // safer than destroying it underneath that thread.
+                print("⚠️ mpv event thread did not exit; leaking handle")
+                return
+            }
         }
-        #endif
 
-        if waitForExit {
-            return eventLoopGroup.wait(timeout: .now() + 2.0) == .success
+        willDestroyHandle?()
+        willDestroyHandle = nil
+
+        let initialized = isInitialized
+        isInitialized = false
+        DispatchQueue.global(qos: .utility).async {
+            if initialized {
+                mpv_terminate_destroy(handle)
+            } else {
+                mpv_destroy(handle)
+            }
         }
-        return true
     }
 
-    private func shouldContinueEventLoop() -> Bool {
-        eventLoopStateQueue.sync { eventLoopRunning }
+    // MARK: - Events
+
+    private func startEventThread(handle: OpaquePointer) {
+        eventThreadLock.withLock { eventThreadRunning = true }
+        let thread = Thread { [weak self] in
+            self?.runEventLoop(handle: handle)
+        }
+        thread.name = "com.sharpstream.mpv-events"
+        thread.qualityOfService = .userInitiated
+        thread.start()
     }
-    
-        #if canImport(Libmpv)
+
+    private func runEventLoop(handle: OpaquePointer) {
+        defer { eventThreadExited.signal() }
+        while eventThreadLock.withLock({ eventThreadRunning }) {
+            guard let event = mpv_wait_event(handle, 0.5)?.pointee else { continue }
+            if event.event_id == MPV_EVENT_SHUTDOWN {
+                DispatchQueue.main.async { [weak self] in self?.eventHandler?(.shutdown) }
+                return
+            }
+            handleEvent(event)
+        }
+    }
+
+    /// Runs on the event thread. Event payloads are only valid until the next
+    /// `mpv_wait_event`, so values are copied out before hopping to main.
     private func handleEvent(_ event: mpv_event) {
-        let eventId = event.event_id
-        
-        switch eventId {
+        switch event.event_id {
         case MPV_EVENT_FILE_LOADED:
             DispatchQueue.main.async { [weak self] in
-                self?.eventHandler?(.fileLoaded)
+                guard let self else { return }
+                self.eventHandler?(.fileLoaded)
             }
-            DispatchQueue.main.async { [weak self] in
-                self?.updateDuration()
-                // Start frame extraction once stream is loaded
-                self?.startFrameExtraction()
-                // Force initial time update after a short delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    self?.updateCurrentTime()
-                }
-            }
-            
-        case MPV_EVENT_PROPERTY_CHANGE:
-            if let data = event.data {
-                let property = data.bindMemory(to: mpv_event_property.self, capacity: 1).pointee
-                if let name = property.name {
-                    let propertyName = String(cString: name)
-                    handlePropertyChange(propertyName, property: property)
-                }
-            }
-            
+
         case MPV_EVENT_END_FILE:
-            DispatchQueue.main.async { [weak self] in
-                self?.eventHandler?(.endFile)
+            var reason = MPVEndFileReason.unknown
+            var message: String?
+            if let data = event.data {
+                let info = data.assumingMemoryBound(to: mpv_event_end_file.self).pointee
+                switch info.reason {
+                case MPV_END_FILE_REASON_EOF: reason = .eof
+                case MPV_END_FILE_REASON_STOP: reason = .stop
+                case MPV_END_FILE_REASON_QUIT: reason = .quit
+                case MPV_END_FILE_REASON_ERROR: reason = .error
+                case MPV_END_FILE_REASON_REDIRECT: reason = .redirect
+                default: reason = .unknown
+                }
+                if info.error < 0 {
+                    message = Self.errorString(info.error)
+                }
             }
+            captureQueue.async { [weak self] in self?.capturePaused = true }
             DispatchQueue.main.async { [weak self] in
                 self?.isPlaying = false
-            }
-            
-        case MPV_EVENT_SEEK:
-            // Seek event - update time after seek completes
-            print("📍 MPV_EVENT_SEEK received")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.updateCurrentTime()
-            }
-            
-        case MPV_EVENT_PLAYBACK_RESTART:
-            // Playback restarted - update time
-            print("🔄 MPV_EVENT_PLAYBACK_RESTART received")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.updateCurrentTime()
-            }
-            
-        default:
-            // Log unknown events for debugging (but not constantly)
-            if eventId != MPV_EVENT_NONE {
-                // Only log occasionally to avoid spam
-                eventLogCount += 1
-                if eventLogCount % 50 == 0 {
-                    print("MPV Event: \(eventId)")
-                }
-            }
-            break
-        }
-    }
-    
-    private func handlePropertyChange(_ propertyName: String, property: mpv_event_property) {
-        guard let data = property.data else { return }
-
-        // IMPORTANT: property.data is only valid for the current event lifetime.
-        // Copy values synchronously on the event thread, then dispatch scalars.
-        switch propertyName {
-        case "playback-time":
-            guard property.format == MPV_FORMAT_DOUBLE else { return }
-            let time = data.bindMemory(to: Double.self, capacity: 1).pointee
-            DispatchQueue.main.async { [weak self] in
-                if time >= 0 && abs((self?.currentTime ?? -1) - time) > 0.01 {
-                    self?.currentTime = time
-                }
+                self?.eventHandler?(.endFile(reason: reason, message: message))
             }
 
-        case "duration":
-            guard property.format == MPV_FORMAT_DOUBLE else { return }
-            let dur = data.bindMemory(to: Double.self, capacity: 1).pointee
-            DispatchQueue.main.async { [weak self] in
-                self?.duration = dur
-            }
-
-        case "pause":
-            guard property.format == MPV_FORMAT_FLAG else { return }
-            let paused = data.bindMemory(to: Int32.self, capacity: 1).pointee
-            DispatchQueue.main.async { [weak self] in
-                self?.isPlaying = (paused == 0)
-            }
-
-        case "speed":
-            guard property.format == MPV_FORMAT_DOUBLE else { return }
-            let speed = data.bindMemory(to: Double.self, capacity: 1).pointee
-            DispatchQueue.main.async { [weak self] in
-                self?.playbackSpeed = speed
-            }
-
-        case "volume":
-            guard property.format == MPV_FORMAT_DOUBLE else { return }
-            let vol = data.bindMemory(to: Double.self, capacity: 1).pointee
-            DispatchQueue.main.async { [weak self] in
-                self?.volume = vol / 100.0 // Convert from 0-100 to 0-1
-            }
+        case MPV_EVENT_PROPERTY_CHANGE:
+            guard let data = event.data else { return }
+            let property = data.assumingMemoryBound(to: mpv_event_property.self).pointee
+            handlePropertyChange(id: event.reply_userdata, property: property)
 
         default:
             break
         }
     }
-    #else
-    private func handleEvent(_ event: Any) {
-        // Placeholder
-    }
-    #endif
-    
-    func cleanup() {
-        stopFrameExtraction()
-        stopMetadataUpdateTimer()
-        let eventLoopStopped = stopEventLoop(waitForExit: true)
-        eventHandler = nil
-        frameCallback = nil
-        windowView = nil
-        
-        #if canImport(Libmpv)
-        if let context = renderContext {
-            mpv_render_context_free(context)
-            renderContext = nil
-        }
-        
-        if let handle = mpvHandle {
-            if eventLoopStopped {
-                mpv_terminate_destroy(handle)
-                mpvHandle = nil
-            } else {
-                print("⚠️ Skipping mpv_terminate_destroy because event loop did not exit cleanly")
+
+    private func handlePropertyChange(id: UInt64, property: mpv_event_property) {
+        var double: Double?
+        var flag: Bool?
+        if let data = property.data {
+            if property.format == MPV_FORMAT_DOUBLE {
+                double = data.assumingMemoryBound(to: Double.self).pointee
+            } else if property.format == MPV_FORMAT_FLAG {
+                flag = data.assumingMemoryBound(to: Int32.self).pointee != 0
             }
         }
-        #endif
-        isInitialized = false
-        windowIDSet = false
-        pendingStreamURL = nil
+
+        switch id {
+        case Self.observedTimePos:
+            guard let time = double, time.isFinite, time >= 0 else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.rawTimePosition = time
+                if abs(self.currentTime - time) >= 0.1 {
+                    self.currentTime = time
+                }
+            }
+        case Self.observedDuration:
+            let value = (double ?? 0).isFinite ? max(0, double ?? 0) : 0
+            DispatchQueue.main.async { [weak self] in
+                if self?.duration != value { self?.duration = value }
+            }
+        case Self.observedPause:
+            guard let paused = flag else { return }
+            captureQueue.async { [weak self] in self?.capturePaused = paused }
+            DispatchQueue.main.async { [weak self] in
+                if self?.isPlaying == paused { self?.isPlaying = !paused }
+            }
+        case Self.observedSpeed:
+            guard let speed = double else { return }
+            DispatchQueue.main.async { [weak self] in self?.playbackSpeed = speed }
+        case Self.observedVolume:
+            guard let volume = double else { return }
+            DispatchQueue.main.async { [weak self] in self?.volume = volume / 100.0 }
+        case Self.observedPausedForCache:
+            let buffering = flag ?? false
+            DispatchQueue.main.async { [weak self] in
+                if self?.isBuffering != buffering { self?.isBuffering = buffering }
+            }
+        case Self.observedVideoParams:
+            let size = currentVideoDisplaySize()
+            DispatchQueue.main.async { [weak self] in
+                if self?.videoSize != size { self?.videoSize = size }
+            }
+        default:
+            break
+        }
     }
-    
-    // MARK: - Stream Loading
-    
-    /// Load a stream URL (RTSP, SRT, UDP, HLS, local file, etc.)
-    /// If MPV is not initialized yet, stores the URL and loads it after initialization
+
+    private func currentVideoDisplaySize() -> CGSize? {
+        guard let handle = mpvHandle else { return nil }
+        var width: Int64 = 0
+        var height: Int64 = 0
+        guard mpv_get_property(handle, "video-params/dw", MPV_FORMAT_INT64, &width) >= 0,
+              mpv_get_property(handle, "video-params/dh", MPV_FORMAT_INT64, &height) >= 0,
+              width > 0, height > 0 else { return nil }
+        return CGSize(width: Int(width), height: Int(height))
+    }
+
+    // MARK: - Loading
+
+    /// Load a stream URL (RTSP, SRT, UDP, HLS, local file, ...). If libmpv is not
+    /// initialized yet (no surface attached), the load is deferred.
     func loadStream(url: String) {
-        print("🎬 MPVPlayerWrapper.loadStream called")
-        let redactedURL = StreamURLRedactor.redacted(url)
-
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else {
-            print("❌ ERROR: MPV handle not available")
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("MPVError"),
-                    object: nil,
-                    userInfo: ["message": "MPV player not initialized"]
-                )
-            }
+        guard mpvHandle != nil else {
+            reportFailure("Player is not available")
             return
         }
-
-        // If MPV is not yet initialized, defer the stream loading
-        if !isInitialized {
+        guard isInitialized, isRenderReady else {
+            // Without a render context mpv would disable the video track.
             pendingStreamURL = url
             return
         }
-
-        // Escape URL if needed
-        let escapedURL = url.replacingOccurrences(of: "\"", with: "\\\"")
-        let command = "loadfile \"\(escapedURL)\""
-
-        print("📝 Executing MPV command: loadfile")
-
-        let result = mpv_command_string(handle, command)
-
+        let result = command(["loadfile", url, "replace"])
         if result < 0 {
-            let errorString = mpv_error_string(result)
-            let error = errorString != nil ? String(cString: errorString!) : "Unknown error (code: \(result))"
-            print("❌ ERROR: Failed to load stream")
-            print("   Error code: \(result)")
-            print("   Error message: \(error)")
-            print("   Stream URL: \(redactedURL)")
+            reportFailure("Failed to load stream: \(Self.errorString(result))")
+        }
+    }
 
-            DispatchQueue.main.async {
-                self.eventHandler?(.loadFailed("Failed to load stream: \(error)"))
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("MPVError"),
-                    object: nil,
-                    userInfo: ["message": "Failed to load stream: \(error)", "url": redactedURL]
-                )
-            }
-        } else {
-            print("✅ Stream load command executed successfully (result: \(result))")
-            print("   Waiting for MPV to start playback...")
+    private func reportFailure(_ message: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.eventHandler?(.loadFailed(message))
         }
-        #else
-        print("⚠️ WARNING: Libmpv not available - cannot load stream: \(redactedURL)")
-        print("   Make sure MPVKit package is properly linked and Libmpv is accessible")
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(
-                name: NSNotification.Name("MPVError"),
-                object: nil,
-                userInfo: ["message": "Libmpv not available - check project dependencies"]
-            )
-        }
-        #endif
     }
-    
-    // MARK: - Playback Control
-    
+
+    // MARK: - Playback control
+
     func play() {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
-        mpv_set_property_string(handle, "pause", "no")
-        DispatchQueue.main.async { [weak self] in
-            self?.isPlaying = true
-        }
-        #endif
+        setProperty("pause", "no")
+        isPlaying = true
     }
-    
+
     func pause() {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
-        mpv_set_property_string(handle, "pause", "yes")
-        DispatchQueue.main.async { [weak self] in
-            self?.isPlaying = false
-        }
-        #endif
+        setProperty("pause", "yes")
+        isPlaying = false
     }
-    
+
     func togglePlayPause() {
-        if isPlaying {
-            pause()
-        } else {
-            play()
+        isPlaying ? pause() : play()
+    }
+
+    /// Seek to an absolute position on the stream timeline.
+    /// `exact: false` snaps to keyframes (fast, used while scrubbing).
+    @discardableResult
+    func seek(to time: TimeInterval, exact: Bool) -> Bool {
+        guard time.isFinite else { return false }
+        let target = max(0, time)
+        let ok = command(["seek", String(format: "%.3f", target), exact ? "absolute+exact" : "absolute+keyframes"]) >= 0
+        if ok {
+            currentTime = target
+            rawTimePosition = target
         }
+        return ok
     }
 
     @discardableResult
-    func seekAbsolute(_ time: TimeInterval, exact: Bool = false) -> Bool {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return false }
-        guard time.isFinite else { return false }
-        let clampedTime = max(0, time)
-        let mode = exact ? "absolute+exact" : "absolute"
-        let command = "seek \(clampedTime) \(mode)"
-        let result = mpv_command_string(handle, command)
-        if result == 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                self?.updateCurrentTime()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                self?.updateCurrentTime()
-            }
-            return true
+    func seek(offset: TimeInterval, exact: Bool) -> Bool {
+        guard offset.isFinite else { return false }
+        let ok = command(["seek", String(format: "%.3f", offset), exact ? "relative+exact" : "relative"]) >= 0
+        if ok {
+            let target = max(0, rawTimePosition + offset)
+            currentTime = target
+            rawTimePosition = target
         }
-        let errorString = mpv_error_string(result)
-        let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
-        print("❌ Absolute seek failed: \(result) (\(error))")
-        return false
-        #else
-        return false
-        #endif
+        return ok
     }
-    
+
     @discardableResult
     func seek(to time: TimeInterval) -> Bool {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return false }
-        guard duration > 0 else {
-            print("⚠️ Absolute seek unavailable: stream duration is unknown")
-            return false
-        }
-        
-        // Clamp time to valid range
-        let clampedTime = max(0, min(time, duration))
-        
-        // Check if this is a significant change (avoid micro-seeks)
-        let currentPlayerTime = self.currentTime
-        if abs(clampedTime - currentPlayerTime) < 0.1 {
-            return true // Too small a change, treat as successful no-op
-        }
-        
-        print("🎯 Seeking to: \(String(format: "%.1f", clampedTime))s (current: \(String(format: "%.1f", currentPlayerTime))s)")
-        
-        // For streams with known duration, use percentage-based seeking for better accuracy
-        // For streams without duration (live streams), use absolute time
-        var seekSucceeded = false
-        
-        if duration > 0 {
-            let percentage = (clampedTime / duration) * 100.0
-            let command = "seek \(percentage) absolute-percent"
-            let result = mpv_command_string(handle, command)
-            
-            if result == 0 {
-                seekSucceeded = true
-                print("✅ Seek command succeeded (percentage: \(String(format: "%.2f", percentage))%)")
-            } else {
-                // Log error
-                let errorString = mpv_error_string(result)
-                let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
-                print("⚠️ Percentage seek failed: \(result) (\(error)), trying absolute time")
-                
-                // Fallback to absolute time
-                let fallbackCommand = "seek \(clampedTime) absolute"
-                let fallbackResult = mpv_command_string(handle, fallbackCommand)
-                if fallbackResult == 0 {
-                    seekSucceeded = true
-                    print("✅ Fallback absolute seek succeeded")
-                } else {
-                    let fallbackErrorString = mpv_error_string(fallbackResult)
-                    let fallbackError = fallbackErrorString != nil ? String(cString: fallbackErrorString!) : "Unknown error"
-                    print("❌ Absolute seek also failed: \(fallbackResult) (\(fallbackError))")
-                    // Don't update UI if seek failed - let it stay at current position
-                    return false
-                }
-            }
-        }
-        
-        // Only update UI if seek command succeeded
-        if seekSucceeded {
-            lastSeekTime = clampedTime
-            // Update currentTime immediately for UI responsiveness
-            DispatchQueue.main.async { [weak self] in
-                self?.currentTime = clampedTime
-            }
-            
-            // Force multiple updates after seek to ensure we get the actual position
-            // Sometimes MPV needs a moment to process the seek
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.updateCurrentTime()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.updateCurrentTime()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.updateCurrentTime()
-                // After 0.5s, check if seek actually worked
-                if let self = self, self.lastSeekTime >= 0 {
-                    let actualTime = self.currentTime
-                    if abs(actualTime - self.lastSeekTime) > 2.0 {
-                        print("⚠️ Seek may have failed - requested \(String(format: "%.1f", self.lastSeekTime))s but got \(String(format: "%.1f", actualTime))s")
-                    }
-                    self.lastSeekTime = -1 // Reset
-                }
-            }
-        } else {
-            // Seek failed - don't update UI, keep current position
-            print("⚠️ Seek failed - keeping current position: \(String(format: "%.1f", currentPlayerTime))s")
-            // Force a time update to ensure we're still reading correctly
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.updateCurrentTime()
-            }
-        }
-        return seekSucceeded
-        #else
-        return false
-        #endif
+        seek(to: time, exact: true)
     }
-    
+
     @discardableResult
     func seek(offset: TimeInterval) -> Bool {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return false }
-        let command = "seek \(offset) relative"
-        let result = mpv_command_string(handle, command)
-        if result == 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.updateCurrentTime()
-            }
-            return true
-        }
-        let errorString = mpv_error_string(result)
-        let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
-        print("❌ Relative seek failed: \(result) (\(error))")
-        return false
-        #else
-        return false
-        #endif
+        seek(offset: offset, exact: false)
     }
-    
+
     func setSpeed(_ speed: Double) {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
-        mpv_set_property_string(handle, "speed", String(speed))
-        DispatchQueue.main.async { [weak self] in
-            self?.playbackSpeed = speed
-        }
-        #endif
+        setProperty("speed", String(speed))
+        playbackSpeed = speed
     }
-    
+
     func setVolume(_ volume: Double) {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
-        let clampedVolume = max(0, min(100, volume * 100))
-        mpv_set_property_string(handle, "volume", String(clampedVolume))
-        DispatchQueue.main.async { [weak self] in
-            self?.volume = volume
-        }
-        #endif
+        let clamped = max(0, min(1, volume))
+        setProperty("volume", String(clamped * 100))
+        self.volume = clamped
     }
-    
-    // MARK: - Frame-by-Frame Navigation
-    
+
     func stepFrame(backward: Bool) {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
-        if backward {
-            mpv_command_string(handle, "frame-back-step")
-        } else {
-            mpv_command_string(handle, "frame-step")
-        }
-        #endif
+        command([backward ? "frame-back-step" : "frame-step"])
     }
-    
-    // MARK: - Frame Extraction
-    
-    /// Set callback for frame extraction.
-    /// - Parameter callback: Called with frame, wall-clock timestamp, and playback time (if available).
+
+    /// Unrounded playback position (the published `currentTime` is throttled).
+    var precisePlaybackTime: TimeInterval {
+        rawTimePosition
+    }
+
+    // MARK: - Frame capture
+
+    /// Called on the capture queue with each sampled frame.
     func setFrameCallback(_ callback: @escaping (CVPixelBuffer, Date, TimeInterval?) -> Void) {
-        frameCallback = callback
-        // Don't start extraction immediately - wait for stream to be ready
-        // startFrameExtraction() will be called when stream is loaded
+        captureQueue.async { [weak self] in
+            self?.frameCallback = callback
+            self?.rescheduleCaptureTimer()
+        }
     }
 
     func setFrameExtractionInterval(_ seconds: TimeInterval) {
-        let clampedInterval = max(0.1, seconds)
-        guard abs(clampedInterval - frameExtractionInterval) > 0.001 else { return }
-        frameExtractionInterval = clampedInterval
-
-        // Re-arm timer so interval changes take effect immediately while connected.
-        if frameExtractionTimer != nil {
-            startFrameExtraction()
-        }
-    }
-    
-    func startFrameExtraction() {
-        stopFrameExtraction()
-        
-        // Only start if we have a callback and handle
-        guard frameCallback != nil, mpvHandle != nil else { return }
-        
-        frameExtractionTimer = Timer.scheduledTimer(withTimeInterval: frameExtractionInterval, repeats: true) { [weak self] _ in
-            self?.extractCurrentFrame()
+        let interval = max(0.1, seconds)
+        captureQueue.async { [weak self] in
+            guard let self, abs(self.captureInterval - interval) > 0.001 else { return }
+            self.captureInterval = interval
+            self.captureMetricsLock.withLock { self.publishedCaptureInterval = interval }
+            self.rescheduleCaptureTimer()
         }
     }
 
-    func suspendFrameExtractionForSnapshot() {
-        frameExtractionSuspendedForSnapshot = frameExtractionTimer != nil
-        stopFrameExtraction()
+    /// Average seconds spent capturing + processing one sampled frame.
+    func captureCost() -> TimeInterval {
+        captureMetricsLock.withLock { captureCostEWMA }
     }
 
-    func resumeFrameExtractionAfterSnapshot() {
-        defer { frameExtractionSuspendedForSnapshot = false }
-        guard frameExtractionSuspendedForSnapshot,
-              frameCallback != nil,
-              mpvHandle != nil else { return }
-        startFrameExtraction()
+    /// Fraction of the capture interval spent on capture + processing.
+    func capturePipelineLoad() -> Double {
+        captureMetricsLock.withLock {
+            publishedCaptureInterval > 0 ? captureCostEWMA / publishedCaptureInterval : 0
+        }
     }
-    
-    private func stopFrameExtraction() {
-        frameExtractionTimer?.invalidate()
-        frameExtractionTimer = nil
-        frameExtractionInFlight = false
-    }
-    
-    private func extractCurrentFrame() {
-        guard mpvHandle != nil,
-              let callback = frameCallback else { return }
 
-        guard !frameExtractionInFlight else { return }
-        frameExtractionInFlight = true
-        
-        // Get current frame using screenshot API (simpler approach)
-        // Note: This is a placeholder - actual implementation would use render context
-        frameExtractionQueue.async { [weak self] in
-            defer {
-                DispatchQueue.main.async { [weak self] in
-                    self?.frameExtractionInFlight = false
+    private func rescheduleCaptureTimer() {
+        captureTimer?.cancel()
+        captureTimer = nil
+        guard frameCallback != nil, !captureShutDown else { return }
+
+        let timer = DispatchSource.makeTimerSource(queue: captureQueue)
+        timer.schedule(deadline: .now() + captureInterval, repeating: captureInterval, leeway: .milliseconds(20))
+        timer.setEventHandler { [weak self] in self?.captureTick() }
+        captureTimer = timer
+        timer.resume()
+    }
+
+    private func captureTick() {
+        // Paused video does not change: re-scoring it would only add duplicates
+        // with fresh timestamps and distort the Smart Pause lookback window.
+        guard !capturePaused, !captureShutDown,
+              let callback = frameCallback,
+              let handle = mpvHandle else { return }
+
+        let started = CACurrentMediaTime()
+        let playbackTime = Self.readDouble(handle, "time-pos")
+        guard let frame = captureCurrentFrame(handle: handle), !Self.isBlankFrame(frame) else { return }
+        callback(frame, Date(), playbackTime)
+
+        let cost = CACurrentMediaTime() - started
+        captureMetricsLock.withLock {
+            captureCostEWMA = captureCostEWMA == 0 ? cost : captureCostEWMA * 0.8 + cost * 0.2
+        }
+    }
+
+    /// Grab the currently decoded frame as a BGRA pixel buffer (video resolution,
+    /// no OSD/letterboxing). Runs on the capture queue; never blocks main.
+    func captureFrame() async -> CVPixelBuffer? {
+        await withCheckedContinuation { continuation in
+            captureQueue.async { [weak self] in
+                guard let self, !self.captureShutDown, let handle = self.mpvHandle else {
+                    continuation.resume(returning: nil)
+                    return
                 }
+                let frame = self.captureCurrentFrame(handle: handle)
+                continuation.resume(returning: frame.flatMap { Self.isBlankFrame($0) ? nil : $0 })
             }
-            // For now, we'll use a workaround with screenshot command
-            // In production, use mpv_render_context_render() for better performance
-            self?.extractFrameViaScreenshot(callback: callback)
         }
     }
-    
-    private func extractFrameViaScreenshot(callback: @escaping (CVPixelBuffer, Date, TimeInterval?) -> Void) {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
 
-        // Prefer a real playback timestamp, but still capture if timing is unavailable.
-        let playbackTime = currentPlaybackTimeForFrameExtraction()
-        let timestamp = Date()
-
-        if let rawFrame = getCurrentFrameViaRawScreenshot(handle: handle), !isLikelyBlackFrame(rawFrame) {
-            lastScreenshotCommandFailureAt = nil
-            callback(rawFrame, timestamp, playbackTime)
-            return
+    /// Must run on `captureQueue`.
+    private func captureCurrentFrame(handle: OpaquePointer) -> CVPixelBuffer? {
+        var result = mpv_node()
+        let status = withCStrings(["screenshot-raw", "video", "bgra"]) { args in
+            mpv_command_ret(handle, args, &result)
         }
-
-        if let lastFailure = lastScreenshotCommandFailureAt,
-           timestamp.timeIntervalSince(lastFailure) < screenshotFailureRetryCooldown {
-            if let fallbackBuffer = snapshotWindowViewPixelBuffer(),
-               !isLikelyBlackFrame(fallbackBuffer) {
-                callback(fallbackBuffer, timestamp, playbackTime)
-            }
-            return
-        }
-
-        // Use screenshot command to extract frame to temporary file
-        let tempDir = FileManager.default.temporaryDirectory
-        let screenshotPath = tempDir.appendingPathComponent("mpv_screenshot_\(UUID().uuidString).png")
-
-        // Execute screenshot command (screenshot-to-file is async, so we need to wait)
-        guard runScreenshotCommand(handle: handle, outputPath: screenshotPath) else {
-            lastScreenshotCommandFailureAt = timestamp
-            // Fall back to rendering snapshot when mpv screenshot command is unavailable.
-            if let fallbackBuffer = snapshotWindowViewPixelBuffer() {
-                if !isLikelyBlackFrame(fallbackBuffer) {
-                    callback(fallbackBuffer, timestamp, playbackTime)
-                }
-            }
-            return
-        }
-
-        // Wait for file to be written (screenshot command is async)
-        var attempts = 0
-        let maxAttempts = 20 // 2 seconds max wait
-        while attempts < maxAttempts {
-            if FileManager.default.fileExists(atPath: screenshotPath.path) {
-                lastScreenshotCommandFailureAt = nil
-                loadScreenshotAsPixelBuffer(
-                    from: screenshotPath,
-                    timestamp: timestamp,
-                    playbackTime: playbackTime,
-                    callback: callback
-                )
-                return
-            }
-            Thread.sleep(forTimeInterval: 0.1)
-            attempts += 1
-        }
-        try? FileManager.default.removeItem(at: screenshotPath)
-        lastScreenshotCommandFailureAt = timestamp
-        if let fallbackBuffer = snapshotWindowViewPixelBuffer() {
-            if !isLikelyBlackFrame(fallbackBuffer) {
-                callback(fallbackBuffer, timestamp, playbackTime)
-            }
-        }
-        #else
-        // Fallback: create empty placeholder
-        let timestamp = Date()
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            1920, 1080,
-            kCVPixelFormatType_32BGRA,
-            nil,
-            &pixelBuffer
-        )
-        
-        if status == kCVReturnSuccess, let buffer = pixelBuffer {
-            callback(buffer, timestamp, nil)
-        }
-        #endif
+        guard status >= 0 else { return nil }
+        defer { mpv_free_node_contents(&result) }
+        return pixelBuffer(fromScreenshotNode: result)
     }
 
-    private func currentPlaybackTimeForFrameExtraction() -> TimeInterval? {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return nil }
+    private func pixelBuffer(fromScreenshotNode node: mpv_node) -> CVPixelBuffer? {
+        guard node.format == MPV_FORMAT_NODE_MAP, let listPtr = node.u.list else { return nil }
+        let list = listPtr.pointee
 
-        var time: Double = 0
-        let format = MPV_FORMAT_DOUBLE
-
-        var result = mpv_get_property(handle, "playback-time", format, &time)
-        if result != 0 {
-            result = mpv_get_property(handle, "time-pos", format, &time)
-        }
-
-        if result != 0 && duration > 0 {
-            var position: Double = 0
-            let posResult = mpv_get_property(handle, "percent-pos", format, &position)
-            if posResult == 0 && position >= 0 {
-                return (position / 100.0) * duration
-            }
-        }
-
-        guard result == 0, time >= 0 else { return nil }
-        return time
-        #else
-        return nil
-        #endif
-    }
-    
-    private func loadScreenshotAsPixelBuffer(
-        from url: URL,
-        timestamp: Date,
-        playbackTime: TimeInterval?,
-        callback: @escaping (CVPixelBuffer, Date, TimeInterval?) -> Void
-    ) {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            print("⚠️ Screenshot file not found: \(url.path)")
-            return
-        }
-        
-        // Load image from file
-        guard let image = NSImage(contentsOf: url) else {
-            print("⚠️ Failed to load screenshot image")
-            try? FileManager.default.removeItem(at: url)
-            return
-        }
-        
-        // Convert NSImage to CVPixelBuffer
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            print("⚠️ Failed to get CGImage from screenshot")
-            try? FileManager.default.removeItem(at: url)
-            return
-        }
-        
-        // Create CVPixelBuffer from CGImage
-        let width = cgImage.width
-        let height = cgImage.height
-        
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue!,
-             kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!] as CFDictionary,
-            &pixelBuffer
-        )
-        
-        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
-            print("⚠️ Failed to create CVPixelBuffer")
-            try? FileManager.default.removeItem(at: url)
-            return
-        }
-        
-        // Lock and copy image data
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-        
-        let context = CGContext(
-            data: CVPixelBufferGetBaseAddress(buffer),
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        )
-        
-        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        
-        // Clean up temp file
-        try? FileManager.default.removeItem(at: url)
-        
-        // Call callback with extracted frame
-        if !isLikelyBlackFrame(buffer) {
-            callback(buffer, timestamp, playbackTime)
-        }
-    }
-    
-    /// Get current frame as CVPixelBuffer (synchronous)
-    /// Note: This is a blocking operation that uses screenshot command
-    func getCurrentFrame() -> CVPixelBuffer? {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return nil }
-
-        if let rawFrame = getCurrentFrameViaRawScreenshot(handle: handle), !isLikelyBlackFrame(rawFrame) {
-            return rawFrame
-        }
-        
-        // Use screenshot command to extract frame
-        let tempDir = FileManager.default.temporaryDirectory
-        let screenshotPath = tempDir.appendingPathComponent("mpv_frame_\(UUID().uuidString).png")
-        
-        guard runScreenshotCommand(handle: handle, outputPath: screenshotPath) else {
-            if let fallback = snapshotWindowViewPixelBuffer(), !isLikelyBlackFrame(fallback) {
-                return fallback
-            }
-            return nil
-        }
-        
-        // Wait for file (with timeout)
-        var attempts = 0
-        while !FileManager.default.fileExists(atPath: screenshotPath.path) && attempts < 40 {
-            Thread.sleep(forTimeInterval: 0.05)
-            attempts += 1
-        }
-        
-        guard FileManager.default.fileExists(atPath: screenshotPath.path),
-              let image = NSImage(contentsOf: screenshotPath),
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            try? FileManager.default.removeItem(at: screenshotPath)
-            if let fallback = snapshotWindowViewPixelBuffer(), !isLikelyBlackFrame(fallback) {
-                return fallback
-            }
-            return nil
-        }
-        
-        // Convert to CVPixelBuffer
-        let width = cgImage.width
-        let height = cgImage.height
-        
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue!,
-             kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!] as CFDictionary,
-            &pixelBuffer
-        )
-        
-        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
-            try? FileManager.default.removeItem(at: screenshotPath)
-            return nil
-        }
-        
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-        
-        let context = CGContext(
-            data: CVPixelBufferGetBaseAddress(buffer),
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        )
-        
-        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        
-        try? FileManager.default.removeItem(at: screenshotPath)
-        if isLikelyBlackFrame(buffer) {
-            if let fallback = snapshotWindowViewPixelBuffer(), !isLikelyBlackFrame(fallback) {
-                return fallback
-            }
-            return nil
-        }
-        return buffer
-        #else
-        return nil
-        #endif
-    }
-
-    private func runScreenshotCommand(handle: OpaquePointer, outputPath: URL) -> Bool {
-        #if canImport(Libmpv)
-        let escapedPath = outputPath.path.replacingOccurrences(of: "\"", with: "\\\"")
-        let videoCommand = "no-osd screenshot-to-file \"\(escapedPath)\" video"
-        if mpv_command_string(handle, videoCommand) == 0 {
-            return true
-        }
-
-        // Some streams/platform combinations only allow window capture.
-        let windowCommand = "no-osd screenshot-to-file \"\(escapedPath)\" window"
-        return mpv_command_string(handle, windowCommand) == 0
-        #else
-        return false
-        #endif
-    }
-
-    private func getCurrentFrameViaRawScreenshot(handle: OpaquePointer) -> CVPixelBuffer? {
-        #if canImport(Libmpv)
-        let captureModes = ["video", "window"]
-
-        for mode in captureModes {
-            var result = mpv_node()
-            if runScreenshotRawCommand(handle: handle, mode: mode, result: &result) == 0 {
-                defer { mpv_free_node_contents(&result) }
-                if let pixelBuffer = pixelBufferFromRawScreenshotNode(result) {
-                    return pixelBuffer
-                }
-            }
-        }
-
-        return nil
-        #else
-        return nil
-        #endif
-    }
-
-    private func runScreenshotRawCommand(handle: OpaquePointer, mode: String, result: inout mpv_node) -> Int32 {
-        #if canImport(Libmpv)
-        var cStrings: [UnsafeMutablePointer<CChar>?] = [
-            strdup("screenshot-raw"),
-            strdup(mode),
-            strdup("bgr0")
-        ]
-        cStrings.append(nil)
-        defer {
-            for cString in cStrings where cString != nil {
-                free(cString)
-            }
-        }
-
-        var args = cStrings.map { $0.map { UnsafePointer<CChar>($0) } }
-        return args.withUnsafeMutableBufferPointer { buffer in
-            mpv_command_ret(handle, buffer.baseAddress, &result)
-        }
-        #else
-        return -1
-        #endif
-    }
-
-    private func pixelBufferFromRawScreenshotNode(_ result: mpv_node) -> CVPixelBuffer? {
-        guard result.format == MPV_FORMAT_NODE_MAP,
-              let nodeList = result.u.list else { return nil }
-
-        var width = 0
-        var height = 0
-        var stride = 0
+        var width = 0, height = 0, stride = 0
         var format = ""
-        var dataPointer: UnsafeRawPointer?
-        var dataSize = 0
-
-        let list = nodeList.pointee
-        guard list.num > 0 else { return nil }
+        var bytes: UnsafeRawPointer?
+        var byteCount = 0
 
         for index in 0..<Int(list.num) {
             guard let keyPtr = list.keys?[index] else { continue }
-            let key = String(cString: keyPtr)
             let value = list.values[index]
-
-            switch key {
-            case "w":
-                if value.format == MPV_FORMAT_INT64 {
-                    width = Int(value.u.int64)
-                }
-            case "h":
-                if value.format == MPV_FORMAT_INT64 {
-                    height = Int(value.u.int64)
-                }
-            case "stride":
-                if value.format == MPV_FORMAT_INT64 {
-                    stride = Int(value.u.int64)
-                }
+            switch String(cString: keyPtr) {
+            case "w": width = Int(value.u.int64)
+            case "h": height = Int(value.u.int64)
+            case "stride": stride = Int(value.u.int64)
             case "format":
-                if value.format == MPV_FORMAT_STRING, let formatPtr = value.u.string {
-                    format = String(cString: formatPtr)
-                }
+                if value.format == MPV_FORMAT_STRING, let str = value.u.string { format = String(cString: str) }
             case "data":
-                if value.format == MPV_FORMAT_BYTE_ARRAY, let byteArray = value.u.ba {
-                    dataPointer = UnsafeRawPointer(byteArray.pointee.data)
-                    dataSize = Int(byteArray.pointee.size)
+                if value.format == MPV_FORMAT_BYTE_ARRAY, let array = value.u.ba {
+                    bytes = UnsafeRawPointer(array.pointee.data)
+                    byteCount = Int(array.pointee.size)
                 }
             default:
                 break
             }
         }
 
-        guard width > 0,
-              height > 0,
-              stride != 0,
-              let dataPointer else {
-            return nil
-        }
+        let rowBytes = abs(stride)
+        guard width > 0, height > 0, rowBytes >= width * 4, byteCount >= rowBytes * height,
+              let bytes, format == "bgra" || format == "bgr0" else { return nil }
 
-        let absStride = abs(stride)
-        guard dataSize >= absStride * height else {
-            return nil
-        }
-
-        // We request bgr0. bgra is also directly compatible with BGRA destination.
-        let isDirectCopy = (format == "bgr0" || format == "bgra" || format.isEmpty)
-        let isRGBA = (format == "rgba")
-        guard isDirectCopy || isRGBA else { return nil }
-
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue!,
-             kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!] as CFDictionary,
-            &pixelBuffer
-        )
-        guard status == kCVReturnSuccess, let pixelBuffer else { return nil }
-
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
-        guard let destinationBase = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
-        let destinationStride = CVPixelBufferGetBytesPerRow(pixelBuffer)
-
-        let sourceTop = stride > 0
-            ? dataPointer
-            : dataPointer.advanced(by: (height - 1) * absStride)
-
-        for y in 0..<height {
-            let sourceRow = stride > 0
-                ? sourceTop.advanced(by: y * absStride)
-                : sourceTop.advanced(by: -y * absStride)
-            let destinationRow = destinationBase.advanced(by: y * destinationStride)
-
-            if isDirectCopy {
-                memcpy(destinationRow, sourceRow, min(destinationStride, width * 4))
-            } else {
-                // RGBA -> BGRA
-                let src = sourceRow.assumingMemoryBound(to: UInt8.self)
-                let dst = destinationRow.assumingMemoryBound(to: UInt8.self)
-                for x in 0..<width {
-                    let srcOffset = x * 4
-                    let dstOffset = x * 4
-                    dst[dstOffset] = src[srcOffset + 2]
-                    dst[dstOffset + 1] = src[srcOffset + 1]
-                    dst[dstOffset + 2] = src[srcOffset]
-                    dst[dstOffset + 3] = src[srcOffset + 3]
-                }
-            }
-        }
-
-        return pixelBuffer
-    }
-
-    private func snapshotWindowViewPixelBuffer() -> CVPixelBuffer? {
-        let cgImage: CGImage?
-
-        if let layer = windowView as? CALayer {
-            let bounds = layer.bounds.integral
-            guard bounds.width > 1, bounds.height > 1 else { return nil }
-
-            let scale = layer.contentsScale > 0 ? layer.contentsScale : 1.0
-            let width = max(1, Int(bounds.width * scale))
-            let height = max(1, Int(bounds.height * scale))
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let bitmapInfo = CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-
-            guard let context = CGContext(
-                data: nil,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: width * 4,
-                space: colorSpace,
-                bitmapInfo: bitmapInfo
-            ) else {
-                return nil
-            }
-
-            context.scaleBy(x: scale, y: scale)
-            layer.render(in: context)
-            cgImage = context.makeImage()
-        } else if let view = windowView as? NSView {
-            let bounds = view.bounds
-            guard bounds.width > 1, bounds.height > 1 else { return nil }
-            guard let rep = view.bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
-            view.cacheDisplay(in: bounds, to: rep)
-            cgImage = rep.cgImage
-        } else {
-            cgImage = nil
-        }
-
-        guard let cgImage else { return nil }
-
-        let width = cgImage.width
-        let height = cgImage.height
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue!,
-             kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!] as CFDictionary,
-            &pixelBuffer
-        )
-
-        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
-            return nil
-        }
-
+        guard let buffer = makePooledPixelBuffer(width: width, height: height) else { return nil }
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let destination = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        let destinationStride = CVPixelBufferGetBytesPerRow(buffer)
+        let copyBytes = width * 4
 
-        let context = CGContext(
-            data: CVPixelBufferGetBaseAddress(buffer),
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        )
-        context?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        for row in 0..<height {
+            let sourceRow = stride > 0 ? row : (height - 1 - row)
+            memcpy(destination.advanced(by: row * destinationStride), bytes.advanced(by: sourceRow * rowBytes), copyBytes)
+        }
+
+        if format == "bgr0" {
+            // Padding byte is undefined; force opaque alpha so exports/Vision see pixels.
+            for row in 0..<height {
+                let pixels = destination.advanced(by: row * destinationStride).assumingMemoryBound(to: UInt8.self)
+                for x in 0..<width { pixels[x * 4 + 3] = 255 }
+            }
+        }
         return buffer
     }
 
-    private func isLikelyBlackFrame(_ pixelBuffer: CVPixelBuffer) -> Bool {
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-
-        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return true }
-
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        let sampleStepX = max(1, width / 48)
-        let sampleStepY = max(1, height / 48)
-
-        var sampleCount = 0
-        var brightSamples = 0
-        var totalLuma = 0.0
-
-        for y in stride(from: 0, to: height, by: sampleStepY) {
-            for x in stride(from: 0, to: width, by: sampleStepX) {
-                let offset = y * bytesPerRow + x * 4
-                let ptr = baseAddress.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
-                let b = Double(ptr[0])
-                let g = Double(ptr[1])
-                let r = Double(ptr[2])
-                let luma = 0.0722 * b + 0.7152 * g + 0.2126 * r
-                totalLuma += luma
-                if luma > 16 { brightSamples += 1 }
-                sampleCount += 1
-            }
+    private func makePooledPixelBuffer(width: Int, height: Int) -> CVPixelBuffer? {
+        if pixelBufferPool == nil || poolSize.width != width || poolSize.height != height {
+            let attributes: [CFString: Any] = [
+                kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey: width,
+                kCVPixelBufferHeightKey: height,
+                kCVPixelBufferCGImageCompatibilityKey: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
+            ]
+            var pool: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool)
+            pixelBufferPool = pool
+            poolSize = (width, height)
         }
-
-        guard sampleCount > 0 else { return true }
-        let avgLuma = totalLuma / Double(sampleCount)
-        let brightRatio = Double(brightSamples) / Double(sampleCount)
-        return avgLuma < 10 && brightRatio < 0.03
+        guard let pool = pixelBufferPool else { return nil }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer)
+        return buffer
     }
-    
-    // MARK: - Metadata Extraction
-    
-    private func startMetadataUpdateTimer() {
-        stopMetadataUpdateTimer() // Stop any existing timer
-        
-        // Update duration and currentTime periodically
-        metadataUpdateTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            self?.updateDuration()
-            self?.updateCurrentTime()
-        }
-        
-        // Verify timer was created
-        if metadataUpdateTimer == nil {
-            print("❌ ERROR: Failed to create metadata update timer")
-        } else {
-            print("✅ Metadata update timer started")
-        }
-    }
-    
-    private func updateCurrentTime() {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
-        var time: Double = 0
-        let format = MPV_FORMAT_DOUBLE
-        
-        // Try playback-time first (most reliable)
-        var result = mpv_get_property(handle, "playback-time", format, &time)
-        
-        // If that fails, try time-pos (alternative property name)
-        if result != 0 {
-            result = mpv_get_property(handle, "time-pos", format, &time)
-        }
-        
-        // Also try position property (percentage-based, 0.0 to 100.0)
-        if result != 0 && duration > 0 {
-            var position: Double = 0
-            let posResult = mpv_get_property(handle, "percent-pos", format, &position)
-            if posResult == 0 && position >= 0 {
-                // Convert percentage to time
-                time = (position / 100.0) * duration
-                result = 0 // Success
-            }
-        }
-        
-        // For live streams without duration, try to get elapsed time since start
-        if result != 0 {
-            // Try to get time-pos which works for live streams
-            result = mpv_get_property(handle, "time-pos", format, &time)
-        }
-        
-        if result == 0 && time >= 0 {
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                // Only update if value actually changed to avoid unnecessary UI updates
-                let oldTime = self.currentTime
-                if abs(oldTime - time) > 0.01 {
-                    self.currentTime = time
-                    // Log first successful update and updates after seeks
-                    if oldTime == 0 && time > 0 {
-                        print("✅ Time update working: \(String(format: "%.1f", time))s (duration: \(String(format: "%.1f", self.duration))s)")
-                    } else if abs(oldTime - time) > 1.0 {
-                        // Significant time change (likely after seek)
-                        print("⏱️ Time updated: \(String(format: "%.1f", oldTime))s → \(String(format: "%.1f", time))s")
-                    }
-                } else if time == 0 && oldTime > 0 {
-                    // Time reset to 0 - this might indicate a problem
-                    print("⚠️ Time reset to 0 (was \(String(format: "%.1f", oldTime))s) - stream may have restarted")
+
+    /// True for frames that are essentially pure black (e.g. before the first
+    /// decoded picture). Genuinely dark scenes still pass.
+    private static func isBlankFrame(_ buffer: CVPixelBuffer) -> Bool {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return true }
+
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+        let stepX = max(1, width / 32)
+        let stepY = max(1, height / 32)
+        for y in Swift.stride(from: 0, to: height, by: stepY) {
+            let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt8.self)
+            for x in Swift.stride(from: 0, to: width, by: stepX) {
+                let offset = x * 4
+                if row[offset] > 6 || row[offset + 1] > 6 || row[offset + 2] > 6 {
+                    return false
                 }
             }
-        } else {
-            // Log error for debugging (only occasionally to avoid spam)
-            timeUpdateErrorCount += 1
-            if timeUpdateErrorCount == 1 || timeUpdateErrorCount % 100 == 0 { // Log first error and every 100th
-                let errorString = mpv_error_string(result)
-                let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
-                print("⚠️ Failed to read playback-time: \(result) (\(error))")
-                print("   Attempted: playback-time, time-pos, percent-pos")
-                print("   Duration: \(duration), isPlaying: \(isPlaying), isInitialized: \(isInitialized)")
-            }
         }
-        #endif
-    }
-    
-    private func stopMetadataUpdateTimer() {
-        metadataUpdateTimer?.invalidate()
-        metadataUpdateTimer = nil
-    }
-    
-    private func updateDuration() {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return }
-        var dur: Double = 0
-        let format = MPV_FORMAT_DOUBLE
-        let result = mpv_get_property(handle, "duration", format, &dur)
-        if result == 0 {
-            DispatchQueue.main.async { [weak self] in
-                self?.duration = dur
-            }
-        }
-        #endif
+        return true
     }
 
-    #if canImport(Libmpv)
-    private func setOptionOrProperty(handle: OpaquePointer, name: String, value: String) {
+    // MARK: - libmpv helpers
+
+    @discardableResult
+    private func command(_ args: [String]) -> Int32 {
+        guard let handle = mpvHandle else { return -1 }
+        return withCStrings(args) { mpv_command(handle, $0) }
+    }
+
+    private func setProperty(_ name: String, _ value: String) {
+        guard let handle = mpvHandle else { return }
         if isInitialized {
             let result = mpv_set_property_string(handle, name, value)
             if result < 0 {
-                let errorString = mpv_error_string(result)
-                let error = errorString != nil ? String(cString: errorString!) : "Unknown error"
-                print("⚠️ MPV set property failed (\(name)=\(value)): \(result) (\(error))")
+                print("⚠️ mpv set \(name)=\(value) failed: \(Self.errorString(result))")
             }
         } else {
             mpv_set_option_string(handle, name, value)
         }
     }
-    #endif
 
-    // MARK: - Live DVR Support
+    func setOptionOrProperty(_ name: String, _ value: String) {
+        setProperty(name, value)
+    }
+
+    private func withCStrings<R>(_ strings: [String], _ body: (UnsafeMutablePointer<UnsafePointer<CChar>?>) -> R) -> R {
+        let owned = strings.map { strdup($0) }
+        defer { owned.forEach { free($0) } }
+        var pointers: [UnsafePointer<CChar>?] = owned.map { UnsafePointer($0) }
+        pointers.append(nil)
+        return pointers.withUnsafeMutableBufferPointer { body($0.baseAddress!) }
+    }
+
+    static func errorString(_ code: Int32) -> String {
+        guard let cString = mpv_error_string(code) else { return "error \(code)" }
+        return String(cString: cString)
+    }
+
+    static func readDouble(_ handle: OpaquePointer, _ name: String) -> Double? {
+        var value: Double = 0
+        guard mpv_get_property(handle, name, MPV_FORMAT_DOUBLE, &value) >= 0, value.isFinite else { return nil }
+        return value
+    }
+
+    // MARK: - Live buffer settings
 
     struct LiveBufferSettings: Equatable {
         let maxWindowSeconds: TimeInterval
         let backBufferBytes: Int64?
     }
 
-    struct LiveCacheMetrics {
-        let windowSeconds: TimeInterval?
-        let liveEdgeTime: TimeInterval?
-        let cacheDuration: TimeInterval?
-        let rawInputRateBps: Int?
-        let totalBytesRead: Int64?
-    }
-
-    struct TransportMetricsSnapshot {
-        let resolution: CGSize?
-        let bitrate: Int?
-        let frameRate: Double?
-        let codecName: String?
-        let frameType: String?
-        let cacheDurationSeconds: TimeInterval?
-        let seekableWindowSeconds: TimeInterval?
-        let rawInputRateBps: Int?
-        let totalBytesRead: Int64?
-    }
-
-    private struct DemuxerCacheRange {
-        let start: Double
-        let end: Double
-    }
-
-    private struct DemuxerCacheState {
-        let ranges: [DemuxerCacheRange]
-        let cacheDuration: Double?
-        let rawInputRateBps: Int?
-        let totalBytesRead: Int64?
-    }
-
-    static func windowSecondsForSeekableRanges(_ ranges: [(start: Double, end: Double)]) -> TimeInterval? {
-        guard !ranges.isEmpty else { return nil }
-        let minStart = ranges.map { $0.start }.min() ?? 0
-        let maxEnd = ranges.map { $0.end }.max() ?? 0
-        let window = max(0, maxEnd - minStart)
-        return window > 0 ? window : nil
-    }
-
-    func liveSeekableWindowSeconds() -> TimeInterval? {
-        liveCacheMetrics()?.windowSeconds
-    }
-
-    func liveCacheMetrics() -> LiveCacheMetrics? {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else { return nil }
-        guard let state = fetchDemuxerCacheState(handle: handle) else { return nil }
-
-        let maxEnd = state.ranges.map { $0.end }.max()
-        let rangeWindow = seekableRangeWindow(state.ranges)
-        let cacheDuration = (state.cacheDuration ?? 0) > 0 ? state.cacheDuration : nil
-        let window = rangeWindow ?? cacheDuration
-
-        return LiveCacheMetrics(
-            windowSeconds: window,
-            liveEdgeTime: maxEnd,
-            cacheDuration: cacheDuration,
-            rawInputRateBps: state.rawInputRateBps,
-            totalBytesRead: state.totalBytesRead
-        )
-        #else
-        return nil
-        #endif
-    }
-
-    func getTransportMetricsSnapshot() -> TransportMetricsSnapshot {
-        #if canImport(Libmpv)
-        let metadata = getMetadata()
-        let cacheMetrics = liveCacheMetrics()
-        let resolvedRxRateBps: Int?
-        if let rawInputRateBps = cacheMetrics?.rawInputRateBps, rawInputRateBps > 0 {
-            resolvedRxRateBps = rawInputRateBps
-        } else if let bitrate = metadata.bitrate, bitrate > 0 {
-            // Fallback when demux raw rate is unavailable on some protocols/builds.
-            resolvedRxRateBps = max(1, bitrate / 8)
-        } else {
-            resolvedRxRateBps = nil
-        }
-
-        return TransportMetricsSnapshot(
-            resolution: metadata.resolution,
-            bitrate: metadata.bitrate,
-            frameRate: metadata.frameRate,
-            codecName: metadata.codecName,
-            frameType: currentFrameType(),
-            cacheDurationSeconds: cacheMetrics?.cacheDuration,
-            seekableWindowSeconds: cacheMetrics?.windowSeconds,
-            rawInputRateBps: resolvedRxRateBps,
-            totalBytesRead: cacheMetrics?.totalBytesRead
-        )
-        #else
-        return TransportMetricsSnapshot(
-            resolution: nil,
-            bitrate: nil,
-            frameRate: nil,
-            codecName: nil,
-            frameType: nil,
-            cacheDurationSeconds: nil,
-            seekableWindowSeconds: nil,
-            rawInputRateBps: nil,
-            totalBytesRead: nil
-        )
-        #endif
-    }
-
     func applyLiveBufferSettings(maxWindowSeconds: TimeInterval, backBufferBytes: Int64?) {
-        let sanitizedSeconds = max(0, maxWindowSeconds)
         liveBufferSettings = LiveBufferSettings(
-            maxWindowSeconds: sanitizedSeconds,
+            maxWindowSeconds: max(0, maxWindowSeconds),
             backBufferBytes: backBufferBytes
         )
         applyLiveBufferSettingsIfPossible()
     }
 
     private func applyLiveBufferSettingsIfPossible() {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle,
-              let settings = liveBufferSettings else {
-            return
-        }
-
-        let secondsValue = max(1, Int(settings.maxWindowSeconds.rounded()))
-        if secondsValue <= 0 {
-            return
-        }
-
-        let cacheValue = String(secondsValue)
-        setOptionOrProperty(handle: handle, name: "cache", value: "yes")
-        setOptionOrProperty(handle: handle, name: "cache-secs", value: cacheValue)
-        setOptionOrProperty(handle: handle, name: "demuxer-readahead-secs", value: cacheValue)
-
+        guard mpvHandle != nil, let settings = liveBufferSettings else { return }
+        let seconds = max(1, Int(settings.maxWindowSeconds.rounded()))
+        setProperty("cache", "yes")
+        // Keep `seconds` of already-played stream behind the playhead.
+        setProperty("demuxer-seekable-cache", "yes")
+        setProperty("cache-secs", String(seconds))
         if let backBytes = settings.backBufferBytes, backBytes > 0 {
-            setOptionOrProperty(handle: handle, name: "demuxer-max-back-bytes", value: String(backBytes))
+            setProperty("demuxer-max-back-bytes", String(backBytes))
         }
-        #endif
-    }
-
-    #if canImport(Libmpv)
-    private func fetchDemuxerCacheState(handle: OpaquePointer) -> DemuxerCacheState? {
-        var node = mpv_node()
-        let result = mpv_get_property(handle, "demuxer-cache-state", MPV_FORMAT_NODE, &node)
-        guard result == 0 else { return nil }
-        defer { mpv_free_node_contents(&node) }
-
-        guard node.format == MPV_FORMAT_NODE_MAP,
-              let nodeList = node.u.list else {
-            return nil
-        }
-
-        let list = nodeList.pointee
-        var ranges: [DemuxerCacheRange] = []
-        var cacheDuration: Double?
-        var rawInputRateBps: Int?
-        var totalBytesRead: Int64?
-
-        for index in 0..<Int(list.num) {
-            guard let keyPtr = list.keys?[index] else { continue }
-            let key = String(cString: keyPtr)
-            let value = list.values[index]
-            let lowerKey = key.lowercased()
-
-            switch key {
-            case "seekable-ranges":
-                if let parsedRanges = parseSeekableRanges(value) {
-                    ranges.append(contentsOf: parsedRanges)
-                }
-            case "cache-duration":
-                cacheDuration = nodeToDouble(value)
-            case "total-bytes":
-                if let numericValue = nodeToDouble(value), numericValue >= 0 {
-                    totalBytesRead = Int64(numericValue)
-                }
-            case "fw-bytes":
-                if totalBytesRead == nil, let numericValue = nodeToDouble(value), numericValue >= 0 {
-                    totalBytesRead = Int64(numericValue)
-                }
-            default:
-                if rawInputRateBps == nil, let numericValue = nodeToDouble(value) {
-                    if lowerKey == "raw-input-rate" {
-                        rawInputRateBps = Int(max(0, numericValue))
-                    } else if lowerKey.contains("input")
-                                && lowerKey.contains("rate")
-                                && (lowerKey.contains("byte") || lowerKey.contains("raw")) {
-                        rawInputRateBps = Int(max(0, numericValue))
-                    }
-                }
-            }
-        }
-
-        if rawInputRateBps == nil {
-            rawInputRateBps = readFirstNumericProperty(
-                handle: handle,
-                names: [
-                    "demuxer-cache-state/raw-input-rate",
-                    "demuxer-cache-state/cache-speed",
-                    "cache-speed"
-                ]
-            ).map { Int(max(0, $0)) }
-        }
-
-        if totalBytesRead == nil {
-            totalBytesRead = readFirstNumericProperty(
-                handle: handle,
-                names: [
-                    "demuxer-cache-state/total-bytes",
-                    "demuxer-cache-state/fw-bytes"
-                ]
-            ).map { Int64(max(0, $0)) }
-        }
-
-        return DemuxerCacheState(
-            ranges: ranges,
-            cacheDuration: cacheDuration,
-            rawInputRateBps: rawInputRateBps,
-            totalBytesRead: totalBytesRead
-        )
-    }
-
-    private func readFirstNumericProperty(handle: OpaquePointer, names: [String]) -> Double? {
-        for name in names {
-            if let intValue = readInt64Property(handle: handle, name: name) {
-                return Double(intValue)
-            }
-            if let doubleValue = readDoubleProperty(handle: handle, name: name) {
-                return doubleValue
-            }
-        }
-        return nil
-    }
-
-    private func readInt64Property(handle: OpaquePointer, name: String) -> Int64? {
-        var value: Int64 = 0
-        guard mpv_get_property(handle, name, MPV_FORMAT_INT64, &value) == 0 else {
-            return nil
-        }
-        return value
-    }
-
-    private func readDoubleProperty(handle: OpaquePointer, name: String) -> Double? {
-        var value: Double = 0
-        guard mpv_get_property(handle, name, MPV_FORMAT_DOUBLE, &value) == 0 else {
-            return nil
-        }
-        return value.isFinite ? value : nil
-    }
-
-    private func readFlagProperty(handle: OpaquePointer, name: String) -> Bool? {
-        var value: Int32 = 0
-        guard mpv_get_property(handle, name, MPV_FORMAT_FLAG, &value) == 0 else {
-            return nil
-        }
-        return value != 0
-    }
-
-    private func readStringProperty(handle: OpaquePointer, name: String) -> String? {
-        var node = mpv_node()
-        guard mpv_get_property(handle, name, MPV_FORMAT_NODE, &node) == 0 else {
-            return nil
-        }
-        defer { mpv_free_node_contents(&node) }
-        return stringFromNode(node)
-    }
-
-    private func parseSeekableRanges(_ node: mpv_node) -> [DemuxerCacheRange]? {
-        guard node.format == MPV_FORMAT_NODE_ARRAY,
-              let list = node.u.list else {
-            return nil
-        }
-
-        var ranges: [DemuxerCacheRange] = []
-        let nodeList = list.pointee
-
-        for index in 0..<Int(nodeList.num) {
-            let entry = nodeList.values[index]
-            guard entry.format == MPV_FORMAT_NODE_MAP,
-                  let mapList = entry.u.list else { continue }
-
-            let map = mapList.pointee
-            var start: Double?
-            var end: Double?
-
-            for mapIndex in 0..<Int(map.num) {
-                guard let mapKeyPtr = map.keys?[mapIndex] else { continue }
-                let mapKey = String(cString: mapKeyPtr)
-                let mapValue = map.values[mapIndex]
-
-                switch mapKey {
-                case "start":
-                    start = nodeToDouble(mapValue)
-                case "end":
-                    end = nodeToDouble(mapValue)
-                default:
-                    break
-                }
-            }
-
-            if let start, let end {
-                ranges.append(DemuxerCacheRange(start: start, end: end))
-            }
-        }
-
-        return ranges.isEmpty ? nil : ranges
-    }
-
-    private func nodeToDouble(_ node: mpv_node) -> Double? {
-        switch node.format {
-        case MPV_FORMAT_DOUBLE:
-            return node.u.double_
-        case MPV_FORMAT_INT64:
-            return Double(node.u.int64)
-        default:
-            return nil
-        }
-    }
-
-    private func seekableRangeWindow(_ ranges: [DemuxerCacheRange]) -> TimeInterval? {
-        MPVPlayerWrapper.windowSecondsForSeekableRanges(ranges.map { (start: $0.start, end: $0.end) })
-    }
-
-    private func stringFromNode(_ node: mpv_node) -> String? {
-        guard node.format == MPV_FORMAT_STRING, let ptr = node.u.string else { return nil }
-        let value = String(cString: ptr).trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
-    }
-
-    private func boolFromNode(_ node: mpv_node) -> Bool? {
-        switch node.format {
-        case MPV_FORMAT_FLAG:
-            return node.u.flag != 0
-        case MPV_FORMAT_INT64:
-            return node.u.int64 != 0
-        default:
-            return nil
-        }
-    }
-
-    private func selectedVideoCodecFromTrackList(handle: OpaquePointer) -> String? {
-        var node = mpv_node()
-        guard mpv_get_property(handle, "track-list", MPV_FORMAT_NODE, &node) == 0 else {
-            return nil
-        }
-        defer { mpv_free_node_contents(&node) }
-
-        guard node.format == MPV_FORMAT_NODE_ARRAY, let listPtr = node.u.list else {
-            return nil
-        }
-
-        var fallbackCodec: String?
-        let list = listPtr.pointee
-        for index in 0..<Int(list.num) {
-            let entry = list.values[index]
-            guard entry.format == MPV_FORMAT_NODE_MAP, let mapPtr = entry.u.list else { continue }
-            let map = mapPtr.pointee
-
-            var type: String?
-            var codec: String?
-            var codecName: String?
-            var codecDescription: String?
-            var selected = false
-
-            for mapIndex in 0..<Int(map.num) {
-                guard let keyPtr = map.keys?[mapIndex] else { continue }
-                let key = String(cString: keyPtr)
-                let value = map.values[mapIndex]
-
-                switch key {
-                case "type":
-                    type = stringFromNode(value)
-                case "codec":
-                    codec = stringFromNode(value)
-                case "codec-name":
-                    codecName = stringFromNode(value)
-                case "codec-desc":
-                    codecDescription = stringFromNode(value)
-                case "selected":
-                    selected = boolFromNode(value) ?? false
-                default:
-                    break
-                }
-            }
-
-            guard type == "video" else { continue }
-            let resolvedCodec = codecName ?? codec ?? codecDescription
-            if fallbackCodec == nil {
-                fallbackCodec = resolvedCodec
-            }
-            if selected, let resolvedCodec {
-                return resolvedCodec
-            }
-        }
-
-        return fallbackCodec
-    }
-
-    private func currentFrameType() -> String? {
-        guard let handle = mpvHandle else { return nil }
-
-        if let keyframe = readFlagProperty(handle: handle, name: "packet-video-keyframe") {
-            return keyframe ? "I" : "P"
-        }
-
-        var node = mpv_node()
-        guard mpv_get_property(handle, "video-frame-info", MPV_FORMAT_NODE, &node) == 0 else {
-            return nil
-        }
-        defer { mpv_free_node_contents(&node) }
-
-        guard node.format == MPV_FORMAT_NODE_MAP, let mapPtr = node.u.list else {
-            return nil
-        }
-
-        let map = mapPtr.pointee
-        for mapIndex in 0..<Int(map.num) {
-            guard let keyPtr = map.keys?[mapIndex] else { continue }
-            let key = String(cString: keyPtr).lowercased()
-            guard key.contains("type"), let value = stringFromNode(map.values[mapIndex]) else { continue }
-            let uppercased = value.uppercased()
-            if uppercased.hasPrefix("I") { return "I" }
-            if uppercased.hasPrefix("P") { return "P" }
-            if uppercased.hasPrefix("B") { return "B" }
-        }
-
-        return nil
-    }
-
-    #endif
-    
-    /// Get stream metadata (resolution, bitrate, frame rate)
-    func getMetadata() -> (resolution: CGSize?, bitrate: Int?, frameRate: Double?, codecName: String?) {
-        #if canImport(Libmpv)
-        guard let handle = mpvHandle else {
-            return (nil, nil, nil, nil)
-        }
-        
-        var resolution: CGSize?
-        var bitrate: Int?
-        var frameRate: Double?
-        let codecName = selectedVideoCodecFromTrackList(handle: handle)
-            ?? readStringProperty(handle: handle, name: "video-codec")
-            ?? readStringProperty(handle: handle, name: "video-format")
-        
-        // Get resolution
-        var width: Int64 = 0
-        var height: Int64 = 0
-        let formatInt64 = MPV_FORMAT_INT64
-        
-        if mpv_get_property(handle, "video-params/dw", formatInt64, &width) == 0,
-           mpv_get_property(handle, "video-params/dh", formatInt64, &height) == 0 {
-            resolution = CGSize(width: Int(width), height: Int(height))
-        } else if mpv_get_property(handle, "video-params/w", formatInt64, &width) == 0,
-                  mpv_get_property(handle, "video-params/h", formatInt64, &height) == 0 {
-            resolution = CGSize(width: Int(width), height: Int(height))
-        } else if let widthFallback = readFirstNumericProperty(
-            handle: handle,
-            names: ["video-out-params/w", "dwidth"]
-        ), let heightFallback = readFirstNumericProperty(
-            handle: handle,
-            names: ["video-out-params/h", "dheight"]
-        ), widthFallback > 0, heightFallback > 0 {
-            resolution = CGSize(width: Int(widthFallback), height: Int(heightFallback))
-        }
-        
-        // Get frame rate
-        if let fps = readFirstNumericProperty(
-            handle: handle,
-            names: [
-                "video-params/fps",
-                "video-out-params/fps",
-                "estimated-vf-fps",
-                "container-fps",
-                "display-fps",
-                "fps"
-            ]
-        ), fps > 0 {
-            frameRate = fps
-        }
-        
-        // Get bitrate (may not be available for all streams)
-        var br: Int64 = 0
-        if mpv_get_property(handle, "video-bitrate", formatInt64, &br) == 0 {
-            bitrate = Int(br)
-        } else if mpv_get_property(handle, "packet-video-bitrate", formatInt64, &br) == 0 {
-            bitrate = Int(br)
-        }
-        
-        return (resolution, bitrate, frameRate, codecName)
-        #else
-        return (nil, nil, nil, nil)
-        #endif
-    }
-    
-    // MARK: - Render Context Setup (for frame extraction)
-    
-    /// Setup render context for frame extraction
-    /// This is required for efficient frame extraction
-    func setupRenderContext() -> Bool {
-        #if canImport(Libmpv)
-        guard mpvHandle != nil else { return false }
-        
-        // Create render context parameters
-        // This is a placeholder - actual implementation requires proper setup
-        // mpv_render_param structure setup would go here
-        
-        // TODO: Implement render context setup when MPVKit API is fully available
-        return false
-        #else
-        return false
-        #endif
     }
 }
 
 extension MPVPlayerWrapper: SmartPausePlayer {}
-
-// MARK: - MPV C API Constants
-
-// These constants should be available from MPVKit
-// If MPVKit doesn't export them, they need to be defined here
-#if !canImport(Libmpv)
-// Placeholder constants - these should match Libmpv's definitions
-private let MPV_FORMAT_DOUBLE: Int32 = 5
-private let MPV_FORMAT_FLAG: Int32 = 1
-private let MPV_FORMAT_INT64: Int32 = 4
-private let MPV_FORMAT_STRING: Int32 = 6
-private let MPV_EVENT_NONE: UInt32 = 0
-private let MPV_EVENT_SHUTDOWN: UInt32 = 1
-private let MPV_EVENT_FILE_LOADED: UInt32 = 8
-private let MPV_EVENT_PROPERTY_CHANGE: UInt32 = 14
-private let MPV_EVENT_END_FILE: UInt32 = 6
-private let MPV_EVENT_SEEK: UInt32 = 3
-private let MPV_EVENT_PLAYBACK_RESTART: UInt32 = 21
-
-// Placeholder C API functions - these won't work without MPVKit
-private func mpv_create() -> OpaquePointer? { return nil }
-private func mpv_initialize(_: OpaquePointer) -> Int32 { return -1 }
-private func mpv_set_option_string(_: OpaquePointer, _: String, _: String) {}
-private func mpv_destroy(_: OpaquePointer) {}
-private func mpv_command_string(_: OpaquePointer, _: String) -> Int32 { return -1 }
-private func mpv_set_property_string(_: OpaquePointer, _: String, _: String) {}
-private func mpv_get_property(_: OpaquePointer, _: String, _: Int32, _: UnsafeMutableRawPointer) -> Int32 { return -1 }
-private func mpv_observe_property(_: OpaquePointer, _: UInt64, _: String, _: Int32) {}
-private func mpv_wait_event(_: OpaquePointer, _: Double) -> UnsafePointer<mpv_event>? { return nil }
-private func mpv_wakeup(_: OpaquePointer) {}
-private func mpv_error_string(_: Int32) -> UnsafePointer<CChar>? { return nil }
-private func mpv_terminate_destroy(_: OpaquePointer) {}
-private func mpv_render_context_free(_: OpaquePointer) {}
-
-// Placeholder structs
-struct mpv_event {
-    var event_id: UInt32
-    var data: UnsafeMutableRawPointer?
-}
-struct mpv_event_property {
-    var name: UnsafePointer<CChar>?
-    var format: Int32
-    var data: UnsafeMutableRawPointer?
-}
-struct mpv_event_error {
-    var error: Int32
-    var error_string: UnsafePointer<CChar>?
-}
-#endif

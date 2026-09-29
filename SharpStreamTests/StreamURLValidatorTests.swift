@@ -148,28 +148,24 @@ final class StreamURLValidatorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(rtspEntry?.useCount ?? 0, 2)
     }
 
-    func testBufferIndexSaveLifecycle() async throws {
-        let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("buffer-tests-\(UUID().uuidString)", isDirectory: true)
-        let diskPath = tempRoot.appendingPathComponent("disk", isDirectory: true)
-        let indexPath = tempRoot.appendingPathComponent("buffer_index.json")
-        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+    func testSessionRecoveryLifecycle() throws {
+        let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("recovery-tests-\(UUID().uuidString)", isDirectory: true)
+        let fileURL = tempRoot.appendingPathComponent("session_recovery.json")
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
-        let bufferManager = BufferManager(diskBufferPath: diskPath, bufferIndexPath: indexPath)
+        let store = SessionRecoveryStore(fileURL: fileURL)
+        XCTAssertNil(store.load())
 
-        await bufferManager.startIndexSaveTimer(streamURL: "rtsp://example.com/live", saveInterval: 0.1)
-        try? await Task.sleep(nanoseconds: 350_000_000)
-        await bufferManager.stopIndexSaveTask()
+        let now = Date()
+        store.markActive(streamURL: "rtsp://example.com/live", streamName: "Camera", now: now)
+        XCTAssertEqual(store.load(now: now)?.streamURL, "rtsp://example.com/live")
+        XCTAssertEqual(store.load(now: now)?.streamName, "Camera")
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: indexPath.path))
-        let recovery = await bufferManager.getRecoveryData()
-        let recoveredURL = await MainActor.run { recovery?.streamURL }
-        XCTAssertEqual(recoveredURL, "rtsp://example.com/live")
+        // Stale sessions are not offered for resume.
+        XCTAssertNil(store.load(now: now.addingTimeInterval(store.maxAge + 1)))
 
-        let firstModified = try indexPath.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        try? await Task.sleep(nanoseconds: 350_000_000)
-        let secondModified = try indexPath.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-
-        XCTAssertEqual(firstModified, secondModified, "Index should stop updating after stopIndexSaveTask()")
+        // A clean disconnect/quit clears the marker.
+        store.clear()
+        XCTAssertNil(store.load(now: now))
     }
 }

@@ -190,12 +190,6 @@ final class SmartPauseCoordinatorTests: XCTestCase {
         stalenessLookbackPadding: TimeInterval = 1.0,
         stalenessFloor: TimeInterval = 8.0
     ) -> SmartPauseCoordinator {
-        let tempRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("smart-pause-coordinator-tests-\(UUID().uuidString)", isDirectory: true)
-        let diskPath = tempRoot.appendingPathComponent("disk", isDirectory: true)
-        let indexPath = tempRoot.appendingPathComponent("index.json")
-        try? FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
-        let bufferManager = BufferManager(diskBufferPath: diskPath, bufferIndexPath: indexPath)
         let ocrEngine = OCREngine()
         let configuration = SmartPauseCoordinator.Configuration(
             maxOnDemandScoreAttempts: maxAttempts,
@@ -207,7 +201,6 @@ final class SmartPauseCoordinatorTests: XCTestCase {
         )
         return SmartPauseCoordinator(
             focusScorer: focusScorer,
-            bufferManager: bufferManager,
             ocrEngine: ocrEngine,
             configuration: configuration
         )
@@ -271,8 +264,6 @@ private final class MockSmartPausePlayer: SmartPausePlayer {
     var seekToResult = true
     var seekOffsetResult = true
 
-    private(set) var suspendCalls = 0
-    private(set) var resumeCalls = 0
     private(set) var pauseCalls = 0
     private(set) var seekToCalls: [TimeInterval] = []
     private(set) var seekOffsetCalls: [TimeInterval] = []
@@ -281,29 +272,21 @@ private final class MockSmartPausePlayer: SmartPausePlayer {
         self.currentTime = currentTime
     }
 
-    func suspendFrameExtractionForSnapshot() {
-        suspendCalls += 1
-    }
-
-    func resumeFrameExtractionAfterSnapshot() {
-        resumeCalls += 1
-    }
-
     func pause() {
         pauseCalls += 1
     }
 
-    func seek(to time: TimeInterval) -> Bool {
+    func seek(to time: TimeInterval, exact: Bool) -> Bool {
         seekToCalls.append(time)
         return seekToResult
     }
 
-    func seek(offset: TimeInterval) -> Bool {
+    func seek(offset: TimeInterval, exact: Bool) -> Bool {
         seekOffsetCalls.append(offset)
         return seekOffsetResult
     }
 
-    func getCurrentFrame() -> CVPixelBuffer? {
+    func captureFrame() async -> CVPixelBuffer? {
         guard !frames.isEmpty else { return nil }
         return frames.removeFirst()
     }
