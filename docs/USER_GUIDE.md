@@ -1,136 +1,151 @@
 # SharpStream User Guide
 
-## Getting Started
+## The window
 
-### Opening a Video File
+- **Sidebar** (left): **Recent** (the last 5 URLs you played, with use counts) and **Saved Streams**. URLs are shown with user names, passwords and query strings removed. Show or hide it with the standard sidebar command in the View menu.
+- **Video** (center): the picture, connection status cards, the frozen analyzed frame with text boxes, and short status messages at the bottom.
+- **Control bar** (below the video): a timeline row and a control row. The control row adapts to the window width. At full width buttons show icons and labels; narrower, they become icon-only with volume in a popover; at the narrowest, frame stepping and speed move into the **More** (…) menu.
+- **Recognized Text panel** (right inspector): lines from the last recognition. Toggle with ⌥⌘T or the toolbar button.
+- **Toolbar**: Open URL from Clipboard, Open File, Statistics, Text Panel.
 
-SharpStream supports multiple ways to open video files:
+## Opening something to play
 
-1. **Drag and Drop** (Easiest)
-   - Simply drag any video file (MP4, MKV, MOV, AVI, TS, etc.) onto the video player window
-   - The file will start playing automatically
+- **Drag and drop** a video file (or a URL) onto the video area.
+- **File › Open File…** (⌘O) opens a panel for video files.
+- **File › Open URL from Clipboard** (⇧⌘V) connects to the URL or file path on the clipboard. Paths starting with `/` or `~` are treated as files.
+- **File › New Stream…** (⌘N), or **+** in the sidebar, opens the stream sheet: enter a name and URL, optionally **Test Connection**, then **Save**. The stream appears under Saved Streams.
+- Click a sidebar entry, or use **File › Open Recent** / **File › Saved Streams**.
 
-2. **File Menu**
-   - File > Open... (⌘O)
-   - Browse and select a video file
+Saved streams can be edited or deleted from their context menu. A recent entry can be saved to the library with **Save to Saved Streams…**. **File › Save Stream to Library…** saves the stream that is currently playing, and **File › Open Recent › Clear Menu** clears the recent list.
 
-3. **Stream URL**
-   - Paste a stream URL (RTSP, SRT, UDP, HLS, etc.) using ⌘⇧N
-   - Or click "Paste Stream URL" in the toolbar
+### Supported sources
 
-### Supported Video Formats
+| Scheme | Notes |
+|---|---|
+| `rtsp://` | Live, rewindable. Uses TCP transport. |
+| `srt://` | Live, rewindable. |
+| `udp://` | Live, rewindable. |
+| `http(s)://…m3u8` (HLS) | Seekable like a file if it has a duration, otherwise live. |
+| `http(s)://` | Same as HLS. |
+| `file://` or a path | Any format mpv/FFmpeg can play. The Open panel offers movie, MPEG-4, QuickTime, AVI and MPEG-2 TS types. |
 
-**Local Files:**
-- MP4, MKV, MOV, AVI, M4V, TS, MTS, WebM, FLV, WMV, MPG, MPEG
+The app is sandboxed. It can open files you pick in the Open panel or drop onto the window, and files in your Downloads and Movies folders. Files you picked or dropped are remembered, so they reopen from Recent or Saved Streams after a relaunch. A path typed or pasted for a file you never picked or dropped only works inside Downloads.
 
-**Stream Protocols:**
-- RTSP (rtsp://)
-- SRT (srt://)
-- UDP (udp://)
-- HLS (http:// or https:// with .m3u8)
-- HTTP/HTTPS streams
-- Local file paths (file://)
+### Connection behaviour
 
-## Features Overview
+- A stream that has not loaded within 15 seconds counts as failed.
+- Network streams that fail or drop reconnect automatically: up to 10 attempts, waiting 1 s, 2 s, 4 s … up to 30 s between them. After that, or for files, an error card offers **Retry** and **Close**.
+- **File › Disconnect** (⇧⌘D) stops playback.
 
-### Playback Controls
+## Playback
 
-- **Play/Pause**: Space bar or play button
-- **Seek**: Click and drag on timeline scrubber
-- **Rewind 10s**: ⌘← or rewind button
-- **Forward 10s**: ⌘→ or forward button
-- **Frame-by-Frame**: ← → arrow keys
-- **Speed Control**: Use speed picker (0.25x - 2x)
-- **Volume**: Adjust with volume slider
+| Action | How |
+|---|---|
+| Play / pause | Space, or the play button |
+| Seek ±5 s | ← / → |
+| Seek ±10 s | ⌘← / ⌘→, ⌥⌘← / ⌥⌘→, or the ±10 buttons |
+| Previous / next frame | `,` / `.`, the frame buttons, or ← / → while a file is paused |
+| Scrub | Drag the timeline. Files show keyframes while you drag and seek exactly when you release. |
+| Speed | Speed menu in the control bar or **Playback › Speed**: 0.25×, 0.5×, 1×, 1.5×, 2× |
+| Volume | Volume slider or popover |
 
-### Smart Pause
+Plain keys (Space, arrows, `,`, `.`, Esc) only act on the player window and are ignored while you type in a text field or a sheet is open.
 
-Find the sharpest frame in recent playback:
-1. Click "Smart Pause" or press ⌘S
-2. App automatically finds best frame in last 3 seconds (configurable)
-3. If Auto-OCR is enabled, text recognition runs automatically
+Files stay on their last frame when they finish, so you can still seek back or analyze the frame.
 
-### OCR (Text Recognition)
+### Live streams and rewind
 
-- Enable OCR in Preferences (OCR tab)
-- Toggle OCR overlay visibility
-- View bounding boxes around recognized text
-- Copy text to clipboard by clicking on overlay
-- Export OCR text to file
+For live sources the timeline covers what the player currently holds in its cache. The left label shows the wall-clock time at the playhead (12- or 24-hour, see Settings). The right label shows **LIVE** at the live edge, or how far behind live you are (for example `−00:42`).
 
-### Export Options
+- Pause, seek or drag the timeline to rewind within the window.
+- **Live** button or **Playback › Jump to Live** (⌘L) returns to the live edge and resumes.
+- The maximum rewind window is set in Settings › General › Rewind window (10, 20, 30 or 40 minutes). The window grows as the stream plays and is limited by that setting and by the cache size, which is estimated from the bitrate and capped at 2 GB.
+- After a reconnect the old cache is gone, so the rewind window starts over.
 
-Access via Export button (⬇️) in toolbar:
+## Smart Pause
 
-- **Save Frame as Image**: Export current frame as PNG/JPEG
-- **Copy Frame**: Copy current frame to clipboard
-- **Export OCR Text**: Save recognized text to .txt file
-- **Copy OCR Text**: Copy text to clipboard
-- **Export Frame with OCR**: Composite image with text overlay
+Smart Pause returns to the sharpest frame from the last few seconds. It helps with motion blur, focus hunting and compression smear.
 
-## Keyboard Shortcuts
+1. Let the video play for a couple of seconds. Frames are only sampled while playing.
+2. Press ⌘S, click **Smart Pause**, or right-click the video › Smart Pause.
+3. Playback pauses on the sharpest frame from the lookback window (Settings › General, 1–5 s, default 3 s). That frame is frozen on screen and the status line reads "Sharpest frame: 1.2s ago (score …)". On files, an orange marker on the timeline shows where it is.
+4. If **Recognize text after Smart Pause** is on (the default), text recognition runs on that exact frame.
 
-| Shortcut | Action |
-|----------|--------|
-| Space | Play/Pause |
-| ⌘← / ⌘→ | Rewind/Forward 10s |
-| ← / → | Step frame backward/forward |
-| ⌘S | Smart Pause |
-| ⌘+ / ⌘- | Increase/Decrease speed |
-| ⌘O | Open file |
-| ⌘⇧N | Paste stream URL |
-| ⌘⌃F | Toggle fullscreen |
-| ⌘, | Preferences |
+Press Space to resume, or Esc / the × button to dismiss the frozen frame.
 
-## Preferences
+Frames are normally sampled 4 times a second. If capturing and scoring takes too long, or macOS reports memory pressure, sampling drops to 2 or 1 per second and recovers when things settle. The Statistics window shows the current rate.
 
-Access via SharpStream > Preferences or ⌘,
+The **Sharpness metric** setting chooses Laplacian (default), Tenengrad or Sobel. They mostly differ on noisy or low-contrast footage.
 
-### Buffer Settings
-- **RAM Buffer Size**: Low (1s), Medium (3s), High (5s)
-- **Maximum Buffer Length**: 20/30/40 minutes
+Possible messages:
+- "No frames captured yet — play for a couple of seconds and try again."
+- "Best frame is stale; try again while playback is active."
+- "Smart Pause picked a frame, but this source can't seek."
 
-### Smart Pause
-- **Lookback Window**: 1-5 seconds (default: 3s)
-- **Auto-OCR**: Automatically run OCR on smart pause
+## Text recognition (OCR)
 
-### OCR Settings
-- **Enable OCR**: Toggle text recognition
-- **Recognition Level**: Fast or Accurate
-- **Language**: Language code (e.g., en-US, fr-FR)
+- **Recognize Text** (⌘R, the button, or the video context menu) pauses and recognizes text in the frame on screen. If a Smart Pause frame is frozen, it uses that frame.
+- Each recognized line is outlined in green on the frozen frame. Hover to see its text; click to copy that line. The header shows how many regions were found.
+- The **Recognized Text** panel lists every line with its confidence. Right-click a line › Copy Line, or use **Copy All** and the **Export** menu (Export Text…, Export Frame with Boxes…).
 
-### Focus Algorithm
-- **Laplacian**: Standard variance-based scoring (default)
-- **Tenengrad**: Gradient-based method (coming soon)
-- **Sobel**: Edge detection-based (coming soon)
+Settings › Text:
+- **Enable text recognition** (on by default).
+- **Accuracy**: Fast or Accurate (default).
+- **Languages**: comma-separated codes such as `en-US, de-DE`. Leave empty for automatic detection. If the listed languages find nothing, recognition retries once with automatic detection.
+- **Language correction** (off by default): helps with sentences, but tends to change codes, licence plates and IDs.
+- **Outline recognized text** and **Show recognized text on hover** control the overlay.
 
-## Tips & Tricks
+## Copying and exporting
 
-1. **Quick Testing**: Drag an MP4 file onto the window to test playback
-2. **Multiple Streams**: Save frequently used streams in the sidebar
-3. **Recent Streams**: Last 5 used streams appear in sidebar
-4. **Export Quality**: Adjust JPEG quality in export dialog
-5. **Performance**: Lower RAM buffer size if experiencing memory issues
-6. **OCR Languages**: Support multiple languages by adding codes separated by commas
+Available from the Edit and File menus, the **More** (…) menu in the control bar, and the video context menu:
+
+| Item | Shortcut | Result |
+|---|---|---|
+| Copy Recognized Text | ⇧⌘C | Copies all recognized text; runs recognition first if needed |
+| Copy Frame | ⌥⌘C | Copies the frozen frame, or the current frame, as an image |
+| Save Frame As… | ⌘E | PNG or JPEG, chosen by the file extension |
+| Quick Save Frame | ⇧⌘E | Saves `frame-<timestamp>` in the last folder you exported to (Pictures by default), in the Quick save format |
+| Export Recognized Text… | | `.txt` file |
+| Export Frame with Text Boxes… | | Image with the boxes and text drawn on it; runs recognition first if needed |
+
+Settings › Export sets the Quick save format (PNG or JPEG) and the JPEG quality.
+
+## Statistics
+
+**View › Show Statistics** (⌥⌘I) opens a separate window with:
+- Status, stream health and reason
+- Transport: current bitrate, receive rate, buffer level, jitter and packet loss (estimated from player metrics, labelled "Proxy")
+- Video: resolution, frame rate, codec, keyframe interval
+- Buffer & performance: rewind window, memory held by Smart Pause frames, focus score, CPU usage, focus scoring FPS, Smart Pause sampling tier, memory pressure
+
+## Resuming after a crash
+
+If SharpStream quits unexpectedly while a stream is playing, the next launch asks "Resume Previous Stream?". A normal quit or disconnect does not trigger the prompt. The marker is ignored after 6 hours.
+
+## Settings reference
+
+| Tab | Setting | Default |
+|---|---|---|
+| General | Rewind window | 30 minutes |
+| General | Lookback window | 3.0 s |
+| General | Sharpness metric | Laplacian |
+| General | Recognize text after Smart Pause | On |
+| General | Use 24-hour time | Off |
+| Text | Enable text recognition | On |
+| Text | Accuracy | Accurate |
+| Text | Languages | `en-US` |
+| Text | Language correction | Off |
+| Text | Outline recognized text | On |
+| Text | Show recognized text on hover | On |
+| Export | Quick save format | PNG |
+| Export | JPEG quality | 80% |
+
+The **Shortcuts** tab lists the keyboard shortcuts.
 
 ## Troubleshooting
 
-**Video won't play:**
-- Check file format is supported
-- Verify file isn't corrupted
-- For streams: Check network connectivity and URL
-
-**No OCR results:**
-- Enable OCR in Preferences
-- Ensure text is visible and clear in frame
-- Try "Accurate" recognition level
-
-**Performance issues:**
-- Reduce RAM buffer size
-- Lower frame extraction FPS
-- Close other applications
-
-**Stream connection fails:**
-- Verify URL is correct
-- Check network connectivity
-- Test with "Test Connection" button
+- **A file won't open**: the sandboxed app can only read files you selected or dropped (remembered across launches), or files in Downloads/Movies. Open it once with File › Open File… or by dropping it; after that, Recent and Saved entries for it work.
+- **Stream won't connect**: check the URL with **Test Connection** in the stream sheet. RTSP uses TCP; make sure the camera allows that.
+- **Smart Pause says no frames**: play for a few seconds first; nothing is sampled while paused.
+- **No text found**: try Accuracy › Accurate, clear the Languages field to use automatic detection, or Smart Pause first to get a sharper frame.
+- **Boxes or labels in the way**: turn off the overlay options in Settings › Text, or hide the Text panel (⌥⌘T).

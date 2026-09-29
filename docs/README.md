@@ -1,28 +1,18 @@
 # SharpStream Documentation
 
-Welcome to the SharpStream documentation. This directory contains comprehensive documentation for developers, contributors, and users.
+## For users
+- [README.md](../README.md): overview, features, shortcuts
+- [QUICK_START.md](../QUICK_START.md): build and try it
+- [USER_GUIDE.md](USER_GUIDE.md): full user guide and settings reference
+- [FEATURES.md](FEATURES.md): feature list, including what is not implemented
 
-## Documentation Index
+## For developers
+- [ARCHITECTURE.md](ARCHITECTURE.md): components, threading model, data flow, design decisions
+- [API_REFERENCE.md](API_REFERENCE.md): overview of the main types and methods
+- [DEVELOPMENT.md](DEVELOPMENT.md): conventions, environment variables, tests, scripts
+- [BUILD.md](../BUILD.md): building, signing, packaging
+- [SPARKLE_SETUP.md](SPARKLE_SETUP.md): plan for auto-updates (not implemented)
+- [CHANGELOG.md](../CHANGELOG.md): changes
 
-### For Users
-- **[README.md](../README.md)** - Quick start, features, and installation
-- **[USER_GUIDE.md](USER_GUIDE.md)** - Complete user guide with tips and troubleshooting
-- **[BUILD.md](../BUILD.md)** - Building from source instructions
-
-### For Developers
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture and design decisions
-- **[DEVELOPMENT.md](DEVELOPMENT.md)** - Development setup and contribution guidelines
-- **[IMPLEMENTATION_STATUS.md](../IMPLEMENTATION_STATUS.md)** - Current implementation status
-- **[MPVKIT_INTEGRATION.md](../MPVKIT_INTEGRATION.md)** - MPVKit integration details and API reference
-
-### Technical Reference
-- **[API_REFERENCE.md](API_REFERENCE.md)** - API documentation for core components
-- **[SPM_DEPENDENCIES.md](../SPM_DEPENDENCIES.md)** - Swift Package Manager dependencies
-- **[CHANGELOG.md](../CHANGELOG.md)** - Version history and changes
-
-## Quick Links
-
-- [Original Implementation Plan](../.cursor/plans/macos_rtsp_ocr_viewer_d27a1d81.plan.md)
-- [Main README](../README.md)
-- [Build Instructions](../BUILD.md)
-- [Implementation Progress](../IMPLEMENTATION_PROGRESS.md)
+## Other
+- [Original implementation plan](../.cursor/plans/macos_rtsp_ocr_viewer_d27a1d81.plan.md) (historical; describes the first design, not the current one)

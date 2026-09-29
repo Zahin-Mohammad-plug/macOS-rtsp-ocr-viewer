@@ -1,92 +1,47 @@
-# Quick Start Guide
+# Quick Start
 
-## Testing the Application
+## 1. Build and run
 
-The easiest way to test SharpStream is to drag and drop a video file!
-
-### Step 1: Build the Project
+Requirements: macOS 26.2 or later and a current Xcode.
 
 ```bash
 open SharpStream.xcodeproj
 ```
 
-In Xcode:
-- Press ⌘R to build and run
-- Or Product > Run
+Select the **SharpStream** scheme and **My Mac**, then press ⌘R. Xcode resolves the only package dependency (MPVKit) on first build.
 
-### Step 2: Test with Drag & Drop
+## 2. Play something
 
-1. **Open the app** - You'll see "No Stream Connected" message
-2. **Drag an MP4 file** (or any supported video) from Finder onto the video player area
-3. **Video starts playing automatically!**
+- Drag a video file (MP4, MOV, MKV, TS, …) onto the video area, or
+- **File › Open File…** (⌘O), or
+- copy a stream URL (`rtsp://…`, `srt://…`, `udp://…`, an HLS `.m3u8`, …) and press ⇧⌘V.
 
-### Supported Video Formats
+The app is sandboxed. Files picked in the Open panel or dropped on the window work from anywhere; for other paths, keep test videos in `~/Downloads` or `~/Movies`.
 
-Drag and drop supports:
-- **MP4** - Most common format
-- **MKV** - Matroska container
-- **MOV** - QuickTime format
-- **AVI** - Classic format
-- **TS** - Transport stream
-- **WebM** - Web format
-- And more (see full list in [README.md](README.md))
+## 3. Try the main features
 
-### Alternative Testing Methods
+1. **Playback**: Space to play/pause, ← / → to seek 5 s, `,` / `.` to step frames on a file.
+2. **Smart Pause**: let it play for a few seconds, then press ⌘S. The sharpest frame from the last 3 seconds is frozen on screen.
+3. **Text**: if the frame contains text, green boxes appear (recognition runs after Smart Pause by default). Click a box to copy its line, or press ⌘R to recognize the current frame. ⌥⌘T shows the Recognized Text panel.
+4. **Export**: ⇧⌘C copies all text, ⌥⌘C copies the frame, ⌘E saves it. The **…** menu in the control bar has all export options.
+5. **Live streams**: pause or drag the timeline to rewind; ⌘L jumps back to live.
+6. **Statistics**: ⌥⌘I.
+7. **Settings**: ⌘, (rewind window, lookback window, sharpness metric, OCR options, export format).
 
-**Option 1: File Menu**
-- File > Open... (⌘O)
-- Select a video file
+Press Space or Esc to leave the frozen frame.
 
-**Option 2: Stream URL**
-- Copy a stream URL (RTSP, SRT, etc.) to clipboard
-- Press ⌘⇧N or click "Paste Stream URL" in toolbar
+## Launching straight into a stream (development)
 
-**Option 3: Add to Stream Library**
-- Click "+" in sidebar
-- Enter name and URL
-- Click "Save" then connect
-
-## Features to Test
-
-Once video is playing:
-
-1. **Playback Controls**
-   - Space bar: Play/Pause
-   - Timeline scrubber: Seek to any position
-   - Arrow keys: Step frame-by-frame
-
-2. **Smart Pause**
-   - Press ⌘S or click "Smart Pause" button
-   - App finds sharpest frame in last 3 seconds
-
-3. **OCR** (if text visible in video)
-   - Enable OCR in Preferences (⌘,)
-   - Click Smart Pause to trigger OCR
-   - Text appears in overlay
-
-4. **Export**
-   - Click export button (⬇️) in toolbar
-   - Export current frame, OCR text, or composite image
+Set `SHARPSTREAM_OPEN_URL` in the scheme's environment (Product › Scheme › Edit Scheme › Run › Arguments) to a URL or `file://` path. The app connects to it at launch.
 
 ## Troubleshooting
 
-**File won't play:**
-- Check file format is supported
-- Verify file isn't corrupted
-- Try a different video file
+- **File won't open**: see the sandbox note above.
+- **Stream won't connect**: check the URL with Test Connection in the New Stream sheet (⌘N).
+- **Build errors**: File › Packages › Reset Package Caches, then clean (⇧⌘K) and rebuild.
 
-**No video appears:**
-- Check console for errors
-- Verify MPVKit is properly linked
-- Ensure file path is valid
+## Next steps
 
-**Build errors:**
-- Clean build folder (⌘⇧K)
-- Reset package caches (File > Packages > Reset Package Caches)
-- Verify SPM dependencies resolved correctly
-
-## Next Steps
-
-- See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for complete usage guide
-- See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) to contribute
-- See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) to understand the system
+- [docs/USER_GUIDE.md](docs/USER_GUIDE.md): full user guide
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): tests and development workflow
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it works

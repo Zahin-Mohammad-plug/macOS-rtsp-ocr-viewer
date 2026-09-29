@@ -1,5 +1,7 @@
 # Sparkle Auto-Update Setup
 
+> **Status: not implemented.** Sparkle is not a dependency of the project and the app contains no update code. SharpStream does not update itself. This document is a plan for adding Sparkle later; nothing below exists in the codebase yet. Note that the app is sandboxed, so an integration would also need Sparkle's sandboxing setup (its XPC installer/downloader services).
+
 This document describes how to set up Sparkle framework for automatic updates in SharpStream.
 
 ## Prerequisites

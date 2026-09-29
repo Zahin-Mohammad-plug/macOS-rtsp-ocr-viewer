@@ -1,108 +1,94 @@
 # Feature List
 
-## Core Features (All Implemented ✅)
+This list covers what the current code does. See [USER_GUIDE.md](USER_GUIDE.md) for how to use each feature.
 
-### Video Playback
-- ✅ Multi-protocol stream support (RTSP, SRT, UDP, HLS, HTTP, local files)
-- ✅ Hardware-accelerated decoding via MPVKit
-- ✅ Drag and drop video files (MP4, MKV, MOV, AVI, TS, etc.)
-- ✅ File menu open dialog (⌘O)
-- ✅ Stream URL paste (⌘⇧N)
+## Playback
+- libmpv (MPVKit 0.41) playback of RTSP (over TCP), SRT, UDP, HLS, HTTP(S) and local files
+- VideoToolbox hardware decoding in copy-back mode, with a ~2 s grace period before falling back to software (for live streams joined mid-GOP)
+- Rendering through the libmpv render API (OpenGL, `CAOpenGLLayer`); follows window resizes, sidebar/inspector toggles and fullscreen
+- Play/pause, ±5 s and ±10 s seeks, frame stepping (files), speed 0.25×/0.5×/1×/1.5×/2×, volume
+- Timeline scrubbing with keyframe previews while dragging and an exact seek on release (files)
+- Files stay loaded and seekable after they finish
+- Drag and drop of files and URLs; open panel; open URL from clipboard
 
-### Playback Controls
-- ✅ Play/Pause (Space)
-- ✅ Timeline scrubber (seek to any position)
-- ✅ Rewind/Forward 10 seconds (⌘←/⌘→)
-- ✅ Frame-by-frame navigation (←/→)
-- ✅ Speed control (0.25x - 2x)
-- ✅ Volume control
+## Live rewind
+- Pause and rewind live streams inside mpv's seekable demuxer cache
+- Rewind window setting: 10 / 20 / 30 / 40 minutes (default 30); cache sized from bitrate, 512 MB–2 GB
+- Timeline window taken from the real cache ranges; wall-clock labels; LIVE / behind-live indicator
+- Jump to Live (⌘L)
 
-### Smart Features
-- ✅ Smart Pause - finds sharpest frame automatically (⌘S)
-- ✅ Focus scoring with Laplacian algorithm
-- ✅ Configurable lookback window (1-5 seconds)
-- ✅ OCR text recognition with Vision framework
-- ✅ Auto-OCR on smart pause (optional)
-- ✅ OCR bounding box visualization
+## Smart Pause
+- Background frame sampling at 4 FPS, adapting to 2 or 1 FPS based on capture+scoring cost and memory pressure
+- Sharpness metrics with vImage/vDSP on a luma plane downscaled to 960 px max: Laplacian variance, Tenengrad, Sobel
+- Bounded candidate store: only frames that can still win a lookback window keep their pixels
+- Lookback window 1–5 s (default 3 s)
+- Pauses, exact-seeks to the chosen frame and freezes that exact frame on screen
+- Timeline marker for the selected frame (files)
+- Optional automatic text recognition afterwards (on by default)
+- Diagnostics and failure reasons (see [DEVELOPMENT.md](DEVELOPMENT.md))
 
-### Buffering
-- ✅ RAM buffer (configurable: 1s/3s/5s)
-- ✅ Disk buffer (up to 40 minutes)
-- ✅ Frame compression (JPEG) for efficiency
-- ✅ Crash recovery with resume dialog
-- ✅ Automatic buffer cleanup
+## Text recognition
+- Apple Vision `VNRecognizeTextRequest`, enabled by default
+- Fast / Accurate (persisted), languages list or automatic detection, language correction (off by default)
+- Per-line results in reading order with confidence
+- Boxes on the frozen analyzed frame; hover shows the text, click copies the line
+- Recognized Text inspector panel with Copy Line, Copy All and export
+- Recognize Text (⌘R)
 
-### Export
-- ✅ Save frame as PNG/JPEG
-- ✅ Copy frame to clipboard
-- ✅ Export OCR text to .txt file
-- ✅ Copy OCR text to clipboard
-- ✅ Export frame with OCR overlay
-- ✅ Batch export (multiple frames)
+## Copy and export
+- Copy recognized text (⇧⌘C), copy frame (⌥⌘C)
+- Save Frame As… (⌘E), Quick Save Frame (⇧⌘E) to the last export folder
+- Export recognized text as `.txt`
+- Export frame with text boxes and labels drawn on it (PNG/JPEG)
+- PNG exports keep correct (opaque) alpha
 
-### Stream Management
-- ✅ Save streams to library
-- ✅ Recent streams (last 5)
-- ✅ Quick stream switching
-- ✅ Stream URL validation
-- ✅ Connection testing
-- ✅ Auto-reconnect with exponential backoff
+## Library
+- Saved streams (add, edit, delete, connect) in SQLite
+- Recent streams (last 5 in the sidebar, last 10 in File › Open Recent)
+- URL validation per protocol and a Test Connection probe
+- URLs shown without credentials or query strings in the sidebar, menus and prompts
+- Security-scoped bookmarks so picked/dropped files reopen from Recent/Saved after a relaunch
 
-### Statistics & Monitoring
-- ✅ Connection status
-- ✅ Bitrate, resolution, frame rate
-- ✅ Buffer health (RAM/disk usage)
-- ✅ Focus score display
-- ✅ CPU/GPU usage
-- ✅ Memory pressure indicator
-- ✅ Focus scoring FPS
+## Reliability
+- Automatic reconnect for network sources: up to 10 attempts with exponential backoff (1 s up to 30 s); 15 s connection timeout
+- Resume prompt after an unclean exit only; cleared on clean quit or disconnect
 
-### Preferences
-- ✅ Buffer size configuration
-- ✅ Maximum buffer length
-- ✅ Lookback window duration
-- ✅ Focus algorithm selection
-- ✅ OCR settings (enable, level, language)
-- ✅ Auto-OCR toggle
+## Statistics
+- Separate Statistics window (⌥⌘I): health, bitrate, receive rate, buffer level, jitter/loss proxies, resolution, frame rate, codec, keyframe interval, rewind window, Smart Pause memory, focus score, CPU, scoring FPS, sampling tier, memory pressure
 
-### UI Features
-- ✅ Fullscreen support (⌘⌃F)
-- ✅ Window size persistence
-- ✅ Sidebar stream list
-- ✅ Stats panel
-- ✅ OCR overlay with bounding boxes
-- ✅ Recovery dialog
-- ✅ Error alerts
+## Interface
+- `NavigationSplitView` sidebar, video area, inspector for recognized text
+- Two-row control bar with full, icon-only and minimal layouts
+- Commands added to the standard File, Edit and View menus, plus a Playback menu
+- Plain-key shortcuts that never swallow typing in text fields
+- Settings window with General, Text, Export and Shortcuts tabs
 
-## Keyboard Shortcuts
+## Not implemented
+- Auto-update (Sparkle is not integrated; [SPARKLE_SETUP.md](SPARKLE_SETUP.md) is a plan)
+- Published DMG or Homebrew release
+- GPU usage metric (not collected)
+- Batch export
+
+## Keyboard shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| Space | Play/Pause |
-| ⌘← / ⌘→ | Rewind/Forward 10s |
-| ← / → | Step frame backward/forward |
+| Space | Play / pause |
+| ← / → | Seek −5 s / +5 s (frame step when a file is paused) |
+| ⌘← / ⌘→ | Seek −10 s / +10 s |
+| ⌥⌘← / ⌥⌘→ | Back / forward 10 seconds |
+| , / . | Previous / next frame |
 | ⌘S | Smart Pause |
-| ⌘+ / ⌘- | Increase/Decrease speed |
-| ⌘O | Open file |
-| ⌘⇧N | Paste stream URL |
-| ⌘⌃F | Toggle fullscreen |
-| ⌘, | Preferences |
-
-## Supported Formats
-
-### Video Files
-- MP4, MKV, MOV, AVI, M4V, TS, MTS, WebM, FLV, WMV, MPG, MPEG, 3GP
-
-### Stream Protocols
-- RTSP (rtsp://)
-- SRT (srt://)
-- UDP (udp://)
-- HLS (HTTP Live Streaming)
-- HTTP/HTTPS
-- Local files (file://)
-
-## Testing
-
-**Quick Test**: Drag an MP4 file onto the video player window!
-
-The app is fully functional and ready for testing. All core features from the original plan have been implemented.
+| ⌘R | Recognize Text |
+| ⌘L | Jump to Live |
+| ⇧⌘C | Copy Recognized Text |
+| ⌥⌘C | Copy Frame |
+| ⌘E / ⇧⌘E | Save Frame As… / Quick Save Frame |
+| ⌘N | New Stream… |
+| ⌘O | Open File… |
+| ⇧⌘V | Open URL from Clipboard |
+| ⇧⌘D | Disconnect |
+| ⌥⌘T | Show / hide Text Panel |
+| ⌥⌘I | Show Statistics |
+| Esc | Dismiss analyzed frame |
+| ⌘, | Settings |

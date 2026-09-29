@@ -1,218 +1,158 @@
 # Development Guide
 
-## Getting Started
+## Setup
 
-1. Clone the repository
-2. Open `SharpStream.xcodeproj` in Xcode
-3. Build and run (⌘R)
+1. Clone the repository and open `SharpStream.xcodeproj`.
+2. Xcode resolves MPVKit (0.41, Swift Package Manager) automatically. There are no other packages.
+3. Select the **SharpStream** scheme and **My Mac**, then run (⌘R).
 
-## Project Structure
+The project targets macOS 26.2 (`MACOSX_DEPLOYMENT_TARGET`). The app target uses Swift 5 language mode with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so types are main-actor isolated unless marked `nonisolated` (for example `FocusScorer`, `SharpnessMetrics`, `OCRResult`).
+
+See [BUILD.md](../BUILD.md) for command-line builds, signing and packaging, and [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
+
+## Project layout
 
 ```
 SharpStream/
-├── App/                    # Application entry point
-│   ├── SharpStreamApp.swift
-│   └── AppMenu.swift
-├── Core/                   # Core business logic
-│   ├── StreamManager.swift       # Stream connection management
-│   ├── MPVPlayerWrapper.swift    # MPVKit/libmpv wrapper
-│   ├── BufferManager.swift       # Frame buffering (RAM + disk)
-│   ├── FocusScorer.swift         # Frame sharpness detection
-│   ├── OCREngine.swift           # Text recognition
-│   ├── ExportManager.swift       # Export functionality
-│   └── StreamDatabase.swift      # SQLite database
-├── Views/                  # SwiftUI views
-│   ├── MainWindow.swift
-│   ├── ControlsView.swift
-│   ├── MPVVideoView.swift
-│   └── ...
-├── Models/                 # Data models
-├── Utils/                  # Utilities and extensions
-└── Resources/              # Assets and configuration
+├── App/        SharpStreamApp, AppState (actions + key monitor), AppMenu
+├── Core/       MPVPlayerWrapper(+Metrics), StreamManager, FocusScorer, SmartPauseCoordinator,
+│               OCREngine, ExportManager, SessionRecoveryStore, FileAccessStore, StreamDatabase,
+│               TransportMetricsSampler
+├── Views/      MainWindow, MPVVideoView, ControlsView, OCROverlayView, ExportView (More menu),
+│               StreamListView, StreamConfigurationView, PreferencesView, StatsPanel
+├── Models/     SavedStream, RecentStream, OCRResult, FrameScore, SmartPauseSelection,
+│               SmartPauseDiagnostics, LiveDVRState, SeekMode, FocusAlgorithm, StreamStats
+├── Utils/      FocusMetrics/SharpnessMetrics, StreamURLValidator, StreamURLRedactor,
+│               VideoLayoutMapper, PerformanceMonitor, TestStreamConfig
+└── Resources/  Info.plist, SharpStream.entitlements
+SharpStreamTests/     unit tests
+SharpStreamUITests/   UI tests
+TestPlan.xctestplan   both targets (UI tests not parallelized)
+scripts/              check / test scripts, DMG packaging
 ```
 
-## Key Components
+## Conventions
 
-### StreamManager
-Orchestrates stream playback and frame extraction. Connects MPVPlayerWrapper, BufferManager, and FocusScorer.
+- **Add user actions to `AppState`** and call them from menus, buttons and shortcuts. Do not add NotificationCenter broadcasts for actions.
+- **Unmodified key shortcuts** go in `AppState.handleKeyDown`, not in menu key equivalents, so text fields keep working. Menu items may show the key in their title (e.g. "Play / Pause   (Space)").
+- **Keep work off the main thread**: frame capture belongs on the player's capture queue, OCR on the OCR queue.
+- **High-frequency state** gets its own small observable (`PlaybackClock`, `LiveDVRStore`) instead of being forwarded through `AppState` or `StreamManager`.
+- **Settings**: add a key to `UserDefaultsKey` (with a default in `registerDefaults()`), bind it with `@AppStorage` in `PreferencesView`, and apply it in `AppState.applyPreferences()` if an engine needs it.
+- **Log URLs through `StreamURLRedactor`**; stream URLs often contain credentials.
 
-### MPVPlayerWrapper
-Swift wrapper around libmpv C API. Handles playback control and frame extraction callbacks.
+## Environment variables
 
-### BufferManager (Actor)
-Thread-safe frame storage with RAM and disk buffers. Handles crash recovery.
+| Variable | Read by | Purpose |
+|---|---|---|
+| `SHARPSTREAM_OPEN_URL` | app | Connect to this URL / `file://` path at launch (dev hook; skips the resume check) |
+| `SHARPSTREAM_UI_TESTING=1` | app | Throwaway storage and no resume prompt. Also enabled automatically when XCTest is loaded. |
+| `SHARPSTREAM_DISABLE_BLOCKING_ALERTS=1` | app | Suppress the modal resume alert |
+| `SHARPSTREAM_TEST_VIDEO_FILE` | UI tests | Local video for the file-playback test |
+| `SHARPSTREAM_TEST_RTSP_URL` | UI tests | Live RTSP URL for the live test (e.g. a MediaMTX camera `rtsp://<host>:8554/cam`) |
+| `SHARPSTREAM_TEST_STREAMS` | `TestStreamConfig`, scripts | Optional comma-separated list of extra sources |
+| `SHARPSTREAM_SMOKE_ENV_FILE` | UI tests | Path of a `NAME=value` file to read the test variables from (default `/tmp/sharpstream_smoke.env`) |
+| `SMART_PAUSE_REPEATS` | `smart_pause_test_matrix.sh` | Iterations per UI scenario (default 10) |
 
-### FocusScorer
-Evaluates frame sharpness using Laplacian variance. Maintains score history for smart pause.
+Put your values in `.env` (copy `.env.example`; `.env` is gitignored). The scripts source `.env` and write `/tmp/sharpstream_smoke.env` for the UI tests. Never commit real camera URLs or credentials.
 
-### OCREngine
-Vision framework wrapper for text recognition. Processes frames asynchronously.
+### Sandbox and test videos
 
-## Adding New Features
+The app is sandboxed (network client/server, user-selected files, Downloads, Movies). Files the user picks or drops get a security-scoped bookmark (`FileAccessStore`) and reopen later from anywhere. A video opened through `SHARPSTREAM_OPEN_URL` or a test is not user-selected and has no bookmark, so it must be somewhere the app can read without a panel: `~/Downloads/…` or the app container's tmp directory, `~/Library/Containers/com.sharpstream.SharpStream/Data/tmp/`. If `SHARPSTREAM_TEST_VIDEO_FILE` is unset, the file test looks for `test_ocr.mp4` in that tmp directory.
 
-### Adding a New Protocol
+## Tests
 
-1. Add to `StreamProtocol` enum in `SavedStream.swift`
-2. Add validation in `StreamURLValidator.swift`
-3. MPVKit handles protocol-specific details automatically
+### Unit tests (`SharpStreamTests`)
 
-### Adding a New Focus Algorithm
-
-1. Create scorer class (e.g., `TenengradFocusScorer.swift`)
-2. Implement `calculateScore(_: CVPixelBuffer) -> Double`
-3. Add to `FocusAlgorithm` enum
-4. Update `FocusScorer` to use new algorithm
-
-### Adding a New Export Format
-
-1. Add case to `ExportFormat` enum in `ExportManager.swift`
-2. Implement conversion in `ExportManager.saveFrame()`
-3. Update `ExportView` UI if needed
-
-## Testing
-
-### Unit Tests
-- Focus scoring algorithms
-- Buffer operations
-- Frame serialization
-
-### Integration Tests
-- Stream connection flow
-- Frame extraction pipeline
-
-### Local QA Stream Setup (Private)
-
-For private RTSP/LAN streams, use local environment variables (never commit real endpoints):
-
-1. Copy `.env.example` to `.env`
-2. Set your stream values:
-   - `SHARPSTREAM_TEST_RTSP_URL=rtsp://<private-host>:554/live`
-   - `SHARPSTREAM_TEST_VIDEO_FILE=/absolute/path/to/test.mp4`
-   - `SHARPSTREAM_TEST_STREAMS=<optional,comma,separated,list>`
-3. Run checks through `scripts/full_check.sh` (it auto-loads `.env` when present)
-
-If no env stream/file is configured, stream-dependent smoke tests are skipped explicitly.
-
-### Full Pre-Release Check
-
-Run the local pre-release validation:
+`FocusScorerTests`, `SmartPauseCoordinatorTests`, `SmartPauseQoSTests`, `LiveDVRTests`, `MPVCacheRangeTests`, `StreamURLValidatorTests`, `StreamDatabaseTests`, `OCREngineTests`, `VideoLayoutMapperTests`, `FileAccessStoreTests`. They need no network or media.
 
 ```bash
-scripts/full_check.sh
+xcodebuild test -project SharpStream.xcodeproj -scheme SharpStream \
+  -destination 'platform=macOS' -only-testing:SharpStreamTests
 ```
 
-This runs:
-- Build (`xcodebuild build`)
-- Tests (`xcodebuild test`) including UI smoke checks
+The unit tests run inside the app as host. `AppState.isUITesting` detects XCTest, so the host uses throwaway storage and never shows the resume prompt. Previously a stale crash marker made the host show a modal alert that blocked the main thread and hung the run.
 
-### Targeted Stability Bug Pass
+### UI tests (`SharpStreamUITests`)
 
-Run the focused RTSP/file hardening workflow with test artifacts:
+Always run:
+- `testLaunchShowsEmptyStateWithoutResumePrompt`
+- `testControlsAreDisabledWithoutStream`
+- `testTextFieldsReceiveSpacesInNewStreamSheet` (regression for keys swallowed by menu equivalents)
+
+Opt-in (they skip when no source is configured):
+- `testFilePlaybackSmartPauseAndTextRecognition`: file playback, controls fit in the window, Smart Pause, OCR on the Smart Pause frame
+- `testLiveRTSPConnectsAndSmartPausesFromBuffer`: live connect, Smart Pause from the cache, Jump to Live
+
+The tests launch the app with `SHARPSTREAM_UI_TESTING=1`, `SHARPSTREAM_DISABLE_BLOCKING_ALERTS=1`, `-ApplePersistenceIgnoreState YES` and `-showOCRInspector NO`, and pass stream sources through `SHARPSTREAM_OPEN_URL`.
+
+Ways to provide the stream variables:
+- in the scheme (Edit Scheme › Test › Arguments › Environment Variables);
+- on the command line with the `TEST_RUNNER_` prefix, which xcodebuild forwards to the test runner:
+  ```bash
+  TEST_RUNNER_SHARPSTREAM_TEST_VIDEO_FILE=~/Downloads/sample.mp4 \
+  TEST_RUNNER_SHARPSTREAM_TEST_RTSP_URL=rtsp://192.168.1.10:8554/cam \
+  xcodebuild test -project SharpStream.xcodeproj -scheme SharpStream \
+    -destination 'platform=macOS' -only-testing:SharpStreamUITests
+  ```
+- as `NAME=value` lines in `/tmp/sharpstream_smoke.env` (or the file named by `SHARPSTREAM_SMOKE_ENV_FILE`).
+
+**UI automation must be enabled on the Mac.** When running from Xcode, approve the automation prompt. For command-line or unattended runs, enable it once:
 
 ```bash
-scripts/targeted_bug_pass.sh
+sudo automationmodetool enable-automationmode-without-authentication
 ```
 
-This writes logs and `.xcresult` bundles under:
-- `DerivedData/bug-pass/<timestamp>/build.log`
-- `DerivedData/bug-pass/<timestamp>/unit-tests.xcresult`
-- `DerivedData/bug-pass/<timestamp>/ui-smoke.xcresult`
+### Scripts
 
-### Smart Pause Validation (test.MOV)
+| Script | What it does | Artifacts |
+|---|---|---|
+| `scripts/full_check.sh` | Debug build, then all tests via `TestPlan` | console |
+| `scripts/targeted_bug_pass.sh` | Build, unit tests, UI tests, each with logs and result bundles | `DerivedData/bug-pass/<timestamp>/` |
+| `scripts/smart_pause_test_matrix.sh` | Smart Pause unit tests, then the file and RTSP UI tests `SMART_PAUSE_REPEATS` times each, with pass/fail counts; exports attachments for failed iterations | `DerivedData/smart-pause-tests/<timestamp>/` |
+| `scripts/create_dmg.sh [version] [build_dir]` | Packages `<build_dir>/SharpStream.app` into a DMG, optionally signs/notarizes it | `<build_dir>/SharpStream-<version>.dmg` |
 
-Use the moving-document sample to validate sharp-frame selection quality:
+All test scripts load `.env` and write `/tmp/sharpstream_smoke.env`.
 
-1. Set env vars in a local `.env` file (gitignored). Copy from `.env.example` and fill in your paths:
-   - `SHARPSTREAM_TEST_VIDEO_FILE` — path to a local test video (e.g. `test.MOV` in project root)
-   - `SHARPSTREAM_TEST_RTSP_URL` — optional RTSP URL for live-stream tests
-   - `SHARPSTREAM_DEBUG_LOG_PATH` - Optional Log path
-2. Run reliability matrix (default: 10 iterations per MP4/live scenario):
-   - `SMART_PAUSE_REPEATS=10 scripts/smart_pause_test_matrix.sh`
-3. Verify Smart Pause feedback and diagnostics:
-   - control status shows selected frame age/score
-   - timeline marker appears for file/timeline mode
-   - live badge appears for live-buffered streams
-   - failed iterations include `smartPauseDiagnosticsLabel` payload in trace attachments
+## Smart Pause diagnostics
 
-### Smart Pause Failure Triage
+`AppState.lastSmartPauseDiagnostics` holds the last run's `SmartPauseDiagnostics`: lookback, seek mode, frame counts before and after recovery, on-demand attempts, whether the warm-up wait was used, the selected sequence number / score / age / playback time, seek result and failure reason.
 
-Use `failureReason` from Smart Pause diagnostics to quickly isolate likely causes:
+| `failureReason` | Where to look |
+|---|---|
+| `noRecentFrames` | Capture not running (paused, no frame callback, blank frames), or the lookback window is too short |
+| `staleSelection` | Newest candidate is older than max(lookback + 1 s, 8 s): sampling stalled |
+| `seekRejected` | `MPVPlayerWrapper.seek(to:exact:)` / `seek(offset:exact:)` failed |
+| `seekDisabled` | `StreamManager.classifySeekMode` returned `.disabled` |
+| `ocrFrameMissing` | The selected candidate's pixel buffer was evicted before OCR |
 
-| failureReason | Likely subsystem |
-| --- | --- |
-| `noRecentFrames` | frame extraction cadence, frame callback timing, lookback window |
-| `staleSelection` | stale history windowing or delayed selection trigger |
-| `seekRejected` | player seek path (`seek(to:)` / `seek(offset:)`) |
-| `seekDisabled` | seek mode classification (`StreamManager.classifySeekMode`) |
-| `ocrFrameMissing` | frame retention / focus scorer history for selected sequence |
+Sampling tiers (see `StreamManager.updateSmartPauseQoS`): 4 FPS normally; 2 FPS after 3 samples with capture load > 35% or on memory-pressure warning; 1 FPS after 3 samples with load > 70% or on critical memory pressure; up one tier after 10 samples with load < 20% and normal memory pressure. Load is capture + scoring time divided by the sampling interval, not process CPU.
 
-### Smart Pause Performance Budget
+## Manual checklist
 
-- Baseline sampling: 4 FPS (`0.25s` frame extraction interval)
-- Degrade to 2 FPS when CPU > 8% for 3 consecutive samples or memory pressure warning
-- Degrade to 1 FPS when CPU > 12% for 3 consecutive samples or memory pressure critical
-- Recover one tier after 10 stable samples at CPU < 6% and normal memory pressure
-- Target envelope: keep Smart Pause scoring overhead under an effective `<8%` app CPU budget in normal playback
-
-### Manual Testing Checklist
-- [ ] Connect to RTSP stream
-- [ ] Test playback controls
-- [ ] Test Smart Pause repeatedly on `test.MOV` and verify selected frame feedback (status + marker)
-- [ ] Test Smart Pause on RTSP and verify live buffer feedback path
-- [ ] Test smart pause + OCR gating (`autoOCROnSmartPause` on/off)
-- [ ] Test frame export
-- [ ] Test buffer recovery
-- [ ] Test reconnection after stream drop
-
-## Code Style
-
-- Use Swift naming conventions
-- Document public APIs with comments
-- Use `actor` for thread-safe types (e.g., BufferManager)
-- Use `@Published` for ObservableObject properties
-- Handle errors gracefully with user-friendly messages
-
-## Performance Considerations
-
-- Frame extraction adds overhead - consider reducing FPS for OCR
-- Use hardware acceleration when available (MPVKit handles this)
-- Monitor memory usage with BufferManager stats
-- Disk I/O is async - don't block main thread
+- [ ] Resize the window, toggle sidebar and inspector, enter/leave fullscreen: the picture follows.
+- [ ] Narrow the window: the control bar switches layouts without clipping buttons.
+- [ ] Type spaces and use arrow keys in the New Stream sheet and the Settings language field.
+- [ ] File: play, scrub, step frames, Smart Pause, text boxes line up, click-to-copy, export frame with boxes.
+- [ ] Live RTSP: rewind, LIVE indicator, Jump to Live, Smart Pause from the cache.
+- [ ] Unplug or stop the source: reconnect attempts, then the error card with Retry.
+- [ ] Force-quit while playing, relaunch: resume prompt. Quit normally, relaunch: no prompt.
+- [ ] Statistics window: Smart Pause frame memory stays small over a long session.
+- [ ] Release build launches (no LuaJIT / hardened-runtime kill).
 
 ## Debugging
 
-### Enable Logging
-Add print statements or use OSLog:
+- mpv messages at warning level and above go to the console (`msg-level=all=warn`).
+- Sampling-tier changes are printed (`Smart Pause sampling -> …`).
+- A Release build that dies at launch with "Code Signature Invalid" usually means an mpv Lua script got enabled again; see the option list in `MPVPlayerWrapper.createHandle()`.
+- If Smart Pause / OCR capture returns nothing, check that `hwdec` is still a copy-back mode; zero-copy frames cannot be read by `screenshot-raw` with the render API.
 
-```swift
-import os.log
-let logger = Logger(subsystem: "com.sharpstream", category: "StreamManager")
-logger.debug("Connecting to stream: \(url)")
-```
+## Auto-update
 
-### Common Issues
-
-**Stream won't connect:**
-- Check URL format
-- Verify network connectivity
-- Check RTSP credentials
-
-**Frames not extracting:**
-- Verify frame callback is set
-- Check MPVKit is properly initialized
-- Ensure render context is set up
-
-**Memory issues:**
-- Reduce RAM buffer size
-- Check disk buffer cleanup
-- Monitor with StatsPanel
+Sparkle is not integrated. [SPARKLE_SETUP.md](SPARKLE_SETUP.md) describes a possible future setup.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for more details on system design.
+1. Create a feature branch.
+2. Make your change and add or update tests.
+3. Run `scripts/full_check.sh` (with `.env` configured if you touched playback, Smart Pause or OCR).
+4. Open a pull request.
