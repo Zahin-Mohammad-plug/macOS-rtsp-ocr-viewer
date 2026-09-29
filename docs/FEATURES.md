@@ -64,8 +64,8 @@ This list covers what the current code does. See [USER_GUIDE.md](USER_GUIDE.md) 
 - Settings window with General, Text, Export and Shortcuts tabs
 
 ## Not implemented
-- Auto-update (Sparkle is not integrated; [SPARKLE_SETUP.md](SPARKLE_SETUP.md) is a plan)
-- Published DMG or Homebrew release
+- Auto-update
+- Published download (signed DMG / Homebrew): on hold until a Developer ID is available
 - GPU usage metric (not collected)
 - Batch export
 

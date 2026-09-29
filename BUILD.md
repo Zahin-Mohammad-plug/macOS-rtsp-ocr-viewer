@@ -4,7 +4,7 @@
 
 - macOS 26.2 or later (the project's deployment target)
 - Xcode with the macOS 26.2 SDK or newer
-- An Apple ID or Developer account for signing. Developer ID is only needed to distribute outside your own machine.
+- An Apple ID in Xcode for local signing (no paid account needed)
 
 ## Dependencies
 
@@ -76,27 +76,13 @@ Release builds must keep mpv's built-in Lua scripts disabled (see `MPVPlayerWrap
 
 There are no published releases and no auto-update mechanism.
 
-`scripts/create_dmg.sh` builds the Release app and packages it as `build/SharpStream-<version>.dmg`. The version and minimum macOS come from the built app's Info.plist.
+`scripts/create_dmg.sh` builds the Release app and packages it as `build/SharpStream-<version>.dmg`, taking the version and minimum macOS from the built app. `SKIP_BUILD=1` packages an existing `build/SharpStream.app`.
 
 ```bash
-# Unsigned DMG: only opens on the machine that built it (Gatekeeper blocks it elsewhere)
 scripts/create_dmg.sh
-
-# Distributable: needs a paid Apple Developer account
-xcrun notarytool store-credentials sharpstream-notary --apple-id you@example.com --team-id TEAMID   # once
-DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)" TEAM_ID=TEAMID \
-NOTARY_PROFILE=sharpstream-notary scripts/create_dmg.sh
 ```
 
-With `DEVELOPER_ID` set, the app and its embedded frameworks are signed with hardened runtime and a secure timestamp, and the DMG is signed. With `NOTARY_PROFILE` also set, the DMG is notarized, stapled and checked with `spctl`. `SKIP_BUILD=1` packages an existing `build/SharpStream.app`. The script prints the DMG's SHA-256.
-
-To publish a release:
-
-1. Upload the DMG to a GitHub release tagged `v<version>`.
-2. Set `version` and `sha256` in `Casks/sharp-stream.rb` (its checksum is a placeholder until then).
-3. Publish the cask in a tap repository (for example `Zahin-Mohammad-plug/homebrew-tap`), so users can run `brew install --cask zahin-mohammad-plug/tap/sharp-stream`.
-
-Sparkle auto-update is not integrated; see [docs/SPARKLE_SETUP.md](docs/SPARKLE_SETUP.md) for a plan.
+The DMG is unsigned: it opens on the Mac that built it, but Gatekeeper blocks it on other Macs. Publishing a download for other people is on hold. It needs a paid Apple Developer account for Developer ID signing and notarization, then a GitHub release and optionally a Homebrew tap. A previous version of `scripts/create_dmg.sh` implemented the signing and notarization steps and can be recovered from git history (commit `a2607ef`). There is no auto-update mechanism.
 
 ## Troubleshooting
 

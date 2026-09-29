@@ -11,7 +11,6 @@
 - [API_REFERENCE.md](API_REFERENCE.md): overview of the main types and methods
 - [DEVELOPMENT.md](DEVELOPMENT.md): conventions, environment variables, tests, scripts
 - [BUILD.md](../BUILD.md): building, signing, packaging
-- [SPARKLE_SETUP.md](SPARKLE_SETUP.md): plan for auto-updates (not implemented)
 - [CHANGELOG.md](../CHANGELOG.md): changes
 
 ## Other
