@@ -113,6 +113,7 @@ final class AppState: ObservableObject {
     let streamDatabase = StreamDatabase(baseDirectory: AppState.testSandbox)
     let performanceMonitor = PerformanceMonitor()
     let recoveryStore = SessionRecoveryStore(fileURL: AppState.testSandbox?.appendingPathComponent("session_recovery.json"))
+    let fileAccess = FileAccessStore()
     lazy var smartPauseCoordinator = SmartPauseCoordinator(focusScorer: focusScorer, ocrEngine: ocrEngine)
 
     private var cancellables = Set<AnyCancellable>()
@@ -130,6 +131,7 @@ final class AppState: ObservableObject {
         let defaults = UserDefaults.standard
         showOCRInspector = defaults.bool(forKey: UserDefaultsKey.showOCRInspector)
 
+        fileAccess.isPersistenceEnabled = !Self.isUITesting
         streamManager.database = streamDatabase
         streamManager.focusScorer = focusScorer
         streamManager.recoveryStore = recoveryStore
@@ -266,12 +268,22 @@ final class AppState: ObservableObject {
     // MARK: - Connecting
 
     func connect(to stream: SavedStream) {
+        var stream = stream
+        if StreamProtocol.detect(from: stream.url) == .file {
+            stream.url = fileAccess.beginAccess(for: stream.url)
+        } else {
+            fileAccess.endAccess()
+        }
         streamManager.connect(to: stream)
     }
 
     func connect(urlString rawInput: String, name: String? = nil) {
-        let urlString = Self.normalizeStreamInput(rawInput)
+        var urlString = Self.normalizeStreamInput(rawInput)
         guard !urlString.isEmpty else { return }
+        // Sandbox access must be in place before validation checks the file exists.
+        if StreamProtocol.detect(from: urlString) == .file {
+            urlString = fileAccess.beginAccess(for: urlString)
+        }
         let validation = StreamURLValidator.validate(urlString)
         guard validation.isValid else {
             showStatus(validation.errorMessage ?? "Invalid stream URL", isError: true)
@@ -282,7 +294,7 @@ final class AppState: ObservableObject {
             url: urlString,
             protocolType: StreamProtocol.detect(from: urlString)
         )
-        streamManager.connect(to: stream)
+        connect(to: stream)
     }
 
     func openFile(url: URL) {
@@ -290,8 +302,10 @@ final class AppState: ObservableObject {
             showStatus("File not found: \(url.lastPathComponent)", isError: true)
             return
         }
+        // The user just granted access (panel/drop): keep it for later launches.
+        fileAccess.remember(url)
         let stream = SavedStream(name: url.lastPathComponent, url: url.absoluteString, protocolType: .file)
-        streamManager.connect(to: stream)
+        connect(to: stream)
     }
 
     func presentOpenFilePanel() {
@@ -315,6 +329,7 @@ final class AppState: ObservableObject {
 
     func disconnect() {
         streamManager.disconnect()
+        fileAccess.endAccess()
         currentOCRResult = nil
         clearAnalysis()
     }
