@@ -159,7 +159,7 @@ final class StreamManager: ObservableObject {
         // fresh render surface). Old players are torn down asynchronously.
         player?.cleanup()
 
-        let newPlayer = MPVPlayerWrapper()
+        let newPlayer = MPVPlayerWrapper(options: Self.playerOptionsFromDefaults())
         lastAppliedLiveBufferSettings = nil
         applyLiveBufferSettingsIfNeeded(for: stream, player: newPlayer)
 
@@ -352,6 +352,9 @@ final class StreamManager: ObservableObject {
         // so a dropped connection triggers a reconnect.
         player.setKeepOpenAtEnd(seekMode == .absolute)
         applyLiveBufferSettingsIfNeeded(for: currentStream, player: player)
+        if UserDefaults.standard.object(forKey: "playbackVolume") != nil {
+            player.setVolume(UserDefaults.standard.double(forKey: "playbackVolume"))
+        }
         player.play()
         resetLiveDVRState()
         startPeriodicSampling()
@@ -363,8 +366,10 @@ final class StreamManager: ObservableObject {
                 if let saved = database?.getStream(byURL: stream.url) {
                     try? database?.updateLastUsed(streamID: saved.id, date: Date())
                 }
-                database?.addRecentStream(url: stream.url)
-                NotificationCenter.default.post(name: .recentStreamsUpdated, object: nil)
+                if Self.defaultsBool("rememberRecentStreams", default: true) {
+                    database?.addRecentStream(url: stream.url)
+                    NotificationCenter.default.post(name: .recentStreamsUpdated, object: nil)
+                }
             }
             recoveryStore?.markActive(streamURL: stream.url, streamName: stream.name)
             lastRecoveryRefresh = Date()
@@ -487,7 +492,8 @@ final class StreamManager: ObservableObject {
     // MARK: - Reconnect policy / seek mode
 
     private func shouldAutoReconnect() -> Bool {
-        guard let stream = currentStream else { return false }
+        guard let stream = currentStream,
+              Self.defaultsBool("autoReconnect", default: true) else { return false }
         return Self.shouldAutoReconnect(protocolType: stream.protocolType, userInitiatedDisconnect: userInitiatedDisconnect)
     }
 
@@ -625,6 +631,23 @@ final class StreamManager: ObservableObject {
         }
         lastAppliedLiveBufferSettings = settings
         player.applyLiveBufferSettings(maxWindowSeconds: settings.maxWindowSeconds, backBufferBytes: settings.backBufferBytes)
+    }
+
+    static func playerOptionsFromDefaults() -> MPVPlayerWrapper.Options {
+        let defaults = UserDefaults.standard
+        var options = MPVPlayerWrapper.Options()
+        if let raw = defaults.string(forKey: "rtspTransport"),
+           let transport = MPVPlayerWrapper.Options.RTSPTransport(rawValue: raw) {
+            options.rtspTransport = transport
+        }
+        options.hardwareDecoding = defaultsBool("hardwareDecoding", default: true)
+        return options
+    }
+
+    /// Typed read that also accepts string values (e.g. `-key NO` launch
+    /// arguments), falling back when the key is unset.
+    static func defaultsBool(_ key: String, default fallback: Bool) -> Bool {
+        UserDefaults.standard.object(forKey: key) == nil ? fallback : UserDefaults.standard.bool(forKey: key)
     }
 
     static func maxBufferWindowSecondsFromDefaults() -> TimeInterval {

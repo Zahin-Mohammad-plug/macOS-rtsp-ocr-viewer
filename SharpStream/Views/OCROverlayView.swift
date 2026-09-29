@@ -127,9 +127,12 @@ struct OCRInspectorView: View {
                         Text(line.text)
                             .font(.body.monospaced())
                             .textSelection(.enabled)
-                        Text("\(Int((line.confidence * 100).rounded()))% confidence")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        // Accurate mode reports ~100% for most lines; only flag doubtful ones.
+                        if line.confidence < 0.9 {
+                            Label("\(Int((line.confidence * 100).rounded()))% confidence", systemImage: "exclamationmark.triangle")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
                     }
                     .contextMenu {
                         Button("Copy Line") { appState.copyText(line.text) }

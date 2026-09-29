@@ -49,6 +49,12 @@ enum UserDefaultsKey {
     static let defaultJPEGQuality = "defaultJPEGQuality"
     static let lastFrameExportDirectory = "lastFrameExportDirectory"
     static let use24HourClock = "use24HourClock"
+    static let rtspTransport = "rtspTransport"
+    static let hardwareDecoding = "hardwareDecoding"
+    static let autoReconnect = "autoReconnect"
+    static let rememberRecentStreams = "rememberRecentStreams"
+    static let autoShowTextPanel = "autoShowTextPanel"
+    static let playbackVolume = "playbackVolume"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -65,7 +71,13 @@ enum UserDefaultsKey {
             showOCRInspector: true,
             defaultExportFormat: "PNG",
             defaultJPEGQuality: 0.8,
-            use24HourClock: false
+            use24HourClock: false,
+            rtspTransport: MPVPlayerWrapper.Options.RTSPTransport.tcp.rawValue,
+            hardwareDecoding: true,
+            autoReconnect: true,
+            rememberRecentStreams: true,
+            autoShowTextPanel: true,
+            playbackVolume: 1.0
         ])
     }
 }
@@ -180,6 +192,10 @@ final class AppState: ObservableObject {
             .store(in: &cancellables)
 
         if !Self.isUITesting { Self.removeLegacyBufferFiles() }
+        // Warm up Vision after launch settles (first recognition is otherwise slow).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.ocrEngine.prewarm()
+        }
         performanceMonitor.startMonitoring()
         startStatsUpdateTimer()
         installKeyMonitor()
@@ -450,6 +466,14 @@ final class AppState: ObservableObject {
 
     func setVolume(_ volume: Double) {
         player?.setVolume(volume)
+        // Remembered for the next stream / launch.
+        UserDefaults.standard.set(max(0, min(1, volume)), forKey: UserDefaultsKey.playbackVolume)
+    }
+
+    func clearRecentStreams() {
+        streamDatabase.clearRecentStreams()
+        NotificationCenter.default.post(name: .recentStreamsUpdated, object: nil)
+        showStatus("Recent streams cleared.")
     }
 
     // MARK: - Smart Pause & OCR
@@ -520,6 +544,9 @@ final class AppState: ObservableObject {
         guard let frame = analyzedFrame, frame.pixelBuffer === pixelBuffer else { return result }
         analyzedFrame?.ocrResult = result ?? OCRResult(text: "", confidence: 0)
         currentOCRResult = result
+        if result != nil, UserDefaults.standard.bool(forKey: UserDefaultsKey.autoShowTextPanel) {
+            showOCRInspector = true
+        }
         if let result {
             if showOCRInspector == false, announce {
                 showStatus("Recognized \(result.lines.count) line(s). Open the Text panel to review.")

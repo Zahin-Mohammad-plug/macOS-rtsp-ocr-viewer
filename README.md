@@ -115,10 +115,14 @@ Space, arrows, `,`, `.` and Esc are handled by a key monitor on the player windo
 
 Open with **SharpStream › Settings…** (⌘,).
 
-- **General**: Rewind window (10/20/30/40 min), Smart Pause lookback window (1–5 s), sharpness metric (Laplacian/Tenengrad/Sobel), "Recognize text after Smart Pause", 24-hour time.
-- **Text**: Enable text recognition, accuracy (Fast/Accurate), languages (comma-separated, empty = automatic), language correction, outline recognized text, show recognized text on hover.
-- **Export**: Quick save format (PNG/JPEG) and JPEG quality.
+- **General**: 24-hour time on the live timeline; remember recent streams; clear recent streams.
+- **Streams**: RTSP transport (TCP/UDP/automatic), hardware video decoding, reconnect automatically, live rewind window (10/20/30/40 min).
+- **Smart Pause**: lookback (1–5 s), sharpness metric (Laplacian/Tenengrad/Sobel), recognize text after pausing.
+- **Text**: enable text recognition, language (automatic or one of Vision's languages), accuracy, language correction, outline recognized text, show text on hover, open the Text panel when text is found.
+- **Export**: Quick Save folder (Downloads by default), format (PNG/JPEG) and JPEG quality.
 - **Shortcuts**: reference list.
+
+Playback volume is remembered between streams and launches.
 
 ## Architecture
 

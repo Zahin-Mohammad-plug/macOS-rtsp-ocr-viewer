@@ -126,19 +126,28 @@ If SharpStream quits unexpectedly while a stream is playing, the next launch ask
 
 | Tab | Setting | Default |
 |---|---|---|
-| General | Rewind window | 30 minutes |
-| General | Lookback window | 3.0 s |
-| General | Sharpness metric | Laplacian |
-| General | Recognize text after Smart Pause | On |
-| General | Use 24-hour time | Off |
+| General | Use 24-hour time on the live timeline | Off |
+| General | Remember recently opened streams | On |
+| General | Clear Recent Streams | (button) |
+| Streams | RTSP transport | TCP |
+| Streams | Hardware video decoding | On |
+| Streams | Reconnect automatically when a stream drops | On |
+| Streams | Rewind window | 30 minutes |
+| Smart Pause | Look back | 3.0 s |
+| Smart Pause | Sharpness metric | Laplacian |
+| Smart Pause | Recognize text in the selected frame | On |
 | Text | Enable text recognition | On |
+| Text | Language | English (en-US); "Automatic" detects it |
 | Text | Accuracy | Accurate |
-| Text | Languages | `en-US` |
 | Text | Language correction | Off |
-| Text | Outline recognized text | On |
-| Text | Show recognized text on hover | On |
-| Export | Quick save format | PNG |
+| Text | Outline recognized text on the frame | On |
+| Text | Show the text when hovering an outline | On |
+| Text | Open the Text panel when text is found | On |
+| Export | Quick Save folder | Downloads |
+| Export | Format | PNG |
 | Export | JPEG quality | 80% |
+
+RTSP transport and hardware decoding apply the next time a stream connects; everything else applies immediately. Playback volume is remembered between streams and launches. Try **UDP** transport for lower latency on a local network, or turn **hardware decoding** off if a stream shows corrupted or green frames.
 
 The **Shortcuts** tab lists the keyboard shortcuts.
 

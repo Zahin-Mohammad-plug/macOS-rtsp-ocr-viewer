@@ -9,6 +9,7 @@ import Foundation
 import Vision
 import CoreVideo
 import CoreImage
+import CoreText
 import Combine
 
 enum OCRRecognitionLevel: String, CaseIterable {
@@ -35,6 +36,47 @@ final class OCREngine: ObservableObject {
     nonisolated static let defaultMinimumTextHeight: Float = 0.01
 
     private let processingQueue = DispatchQueue(label: "com.sharpstream.ocr", qos: .userInitiated)
+
+    /// Vision loads its recognition models on first use, which can take 10+ s
+    /// (longer with automatic language detection). Run one tiny request in the
+    /// background so the user's first Recognize Text is fast.
+    func prewarm() {
+        guard isEnabled else { return }
+        let level = recognitionLevel.visionLevel
+        let languages = normalizedLanguages()
+        let correction = usesLanguageCorrection
+        processingQueue.async {
+            // Real text, so both the detector and the recognizer get loaded.
+            guard let buffer = Self.makeWarmupImage() else { return }
+            _ = try? Self.recognize(in: buffer, level: level, languages: languages, correction: correction,
+                                    minimumTextHeight: Self.defaultMinimumTextHeight)
+        }
+    }
+
+    nonisolated private static func makeWarmupImage() -> CVPixelBuffer? {
+        let width = 320, height = 96
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                            [kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary, &buffer)
+        guard let buffer else { return nil }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return nil }
+        context.setFillColor(gray: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let font = CTFontCreateWithName("Helvetica" as CFString, 40, nil)
+        let text = NSAttributedString(string: "Warm up 123", attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1)
+        ])
+        context.textPosition = CGPoint(x: 16, y: 30)
+        CTLineDraw(CTLineCreateWithAttributedString(text), context)
+        return buffer
+    }
 
     func recognizeText(in pixelBuffer: CVPixelBuffer) async -> OCRResult? {
         await withCheckedContinuation { continuation in

@@ -102,8 +102,23 @@ final class MPVPlayerWrapper: ObservableObject {
 
     // MARK: - Lifecycle
 
-    init(headless: Bool = false) {
+    /// Per-connection options chosen by the user (Settings › Streams).
+    struct Options: Equatable {
+        enum RTSPTransport: String, CaseIterable {
+            case tcp, udp
+            /// Let FFmpeg negotiate (tries UDP, falls back to TCP).
+            case automatic = "lavf"
+        }
+
+        var rtspTransport: RTSPTransport = .tcp
+        var hardwareDecoding = true
+    }
+
+    private let options: Options
+
+    init(headless: Bool = false, options: Options = Options()) {
         self.isHeadless = headless
+        self.options = options
         createHandle()
         completeInitialization()
     }
@@ -139,7 +154,7 @@ final class MPVPlayerWrapper: ObservableObject {
         // Smart Pause / OCR capture. Copy-back costs one GPU→RAM copy per frame
         // (cheap on unified memory) and lets capture work even when the window
         // is hidden or occluded.
-        mpv_set_option_string(handle, "hwdec", "videotoolbox-copy")
+        mpv_set_option_string(handle, "hwdec", options.hardwareDecoding ? "videotoolbox-copy" : "no")
         // Joining a live H.264 stream mid-GOP yields undecodable frames until the
         // next keyframe; VideoToolbox rejects them. mpv's default gives up on
         // hardware decode after 3 failed frames and stays on software (≈4× the
@@ -150,7 +165,7 @@ final class MPVPlayerWrapper: ObservableObject {
         // Chroma precision doesn't matter for sharpness scoring or OCR.
         mpv_set_option_string(handle, "sws-fast", "yes")
         mpv_set_option_string(handle, "network-timeout", "10")
-        mpv_set_option_string(handle, "rtsp-transport", "tcp")
+        mpv_set_option_string(handle, "rtsp-transport", options.rtspTransport.rawValue)
         // Back-seeking inside the demuxer cache is what powers the live DVR.
         mpv_set_option_string(handle, "demuxer-seekable-cache", "yes")
 
