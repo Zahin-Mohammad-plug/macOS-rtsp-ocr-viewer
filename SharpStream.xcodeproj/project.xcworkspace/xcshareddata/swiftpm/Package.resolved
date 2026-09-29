@@ -9,15 +9,6 @@
         "revision" : "613c0ccc3acf70e136aaff880a9b5fe8fdfaf5b8",
         "version" : "0.41.0"
       }
-    },
-    {
-      "identity" : "opencv-spm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/yeatse/opencv-spm.git",
-      "state" : {
-        "revision" : "151a5374946aa867ff3892e0d69fd85e1ecdaf2e",
-        "version" : "4.13.0"
-      }
     }
   ],
   "version" : 3

@@ -222,7 +222,6 @@
 			mainGroup = 9A38405D2F1F779100EF3DBB;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				9A2C15CB2F1F7D3000B642D5 /* XCRemoteSwiftPackageReference "opencv-spm" */,
 				9A2C19752F1F865000B642D5 /* XCRemoteSwiftPackageReference "MPVKit" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -640,14 +639,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		9A2C15CB2F1F7D3000B642D5 /* XCRemoteSwiftPackageReference "opencv-spm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/yeatse/opencv-spm.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 4.13.0;
-			};
-		};
 		9A2C19752F1F865000B642D5 /* XCRemoteSwiftPackageReference "MPVKit" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mpvkit/MPVKit.git";

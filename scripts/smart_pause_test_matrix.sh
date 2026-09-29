@@ -101,7 +101,7 @@ run_step "unit-smart-pause" \
 for i in $(seq 1 "$SMART_PAUSE_REPEATS"); do
   if run_ui_iteration \
     "ui-smart-pause-file" \
-    "SharpStreamUITests/SharpStreamUITests/testOptionalConnectFileViaPasteStreamURLAndTimeProgress" \
+    "SharpStreamUITests/SharpStreamUITests/testFilePlaybackSmartPauseAndTextRecognition" \
     "$i"; then
     FILE_PASS=$((FILE_PASS + 1))
   else
@@ -112,7 +112,7 @@ done
 for i in $(seq 1 "$SMART_PAUSE_REPEATS"); do
   if run_ui_iteration \
     "ui-smart-pause-rtsp" \
-    "SharpStreamUITests/SharpStreamUITests/testOptionalConnectRTSPViaPasteStreamURL" \
+    "SharpStreamUITests/SharpStreamUITests/testLiveRTSPConnectsAndSmartPausesFromBuffer" \
     "$i"; then
     RTSP_PASS=$((RTSP_PASS + 1))
   else

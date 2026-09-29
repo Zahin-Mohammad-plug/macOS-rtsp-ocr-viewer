@@ -52,10 +52,6 @@ extension MPVPlayerWrapper {
         return window > 0 ? window : nil
     }
 
-    func liveSeekableWindowSeconds() -> TimeInterval? {
-        liveCacheMetrics()?.windowSeconds
-    }
-
     /// The seekable window reported by mpv's demuxer cache. Only the ranges mpv
     /// actually holds are reported — nothing is extrapolated from session time.
     func liveCacheMetrics() -> LiveCacheMetrics? {

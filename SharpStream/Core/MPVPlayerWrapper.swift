@@ -498,11 +498,6 @@ final class MPVPlayerWrapper: ObservableObject {
         }
     }
 
-    /// Average seconds spent capturing + processing one sampled frame.
-    func captureCost() -> TimeInterval {
-        captureMetricsLock.withLock { captureCostEWMA }
-    }
-
     /// Fraction of the capture interval spent on capture + processing.
     func capturePipelineLoad() -> Double {
         captureMetricsLock.withLock {

@@ -146,23 +146,4 @@ final class ExportManager {
             throw ExportError.writeFailed
         }
     }
-
-    func batchExport(frames: [CVPixelBuffer], ocrResults: [OCRResult?], to directory: URL, format: ExportFormat = .png) throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        for (index, frame) in frames.enumerated() {
-            let filename = String(format: "frame_%05d", index)
-            try saveFrame(frame, to: directory.appendingPathComponent("\(filename).\(format.fileExtension)"), format: format)
-
-            if let result = ocrResults[safe: index] ?? nil, !result.text.isEmpty {
-                try exportOCRText(result.text, to: directory.appendingPathComponent("\(filename).txt"))
-            }
-        }
-    }
-}
-
-extension Array {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
-    }
 }
