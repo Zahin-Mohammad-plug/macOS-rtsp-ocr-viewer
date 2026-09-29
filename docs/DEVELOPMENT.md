@@ -109,7 +109,7 @@ sudo automationmodetool enable-automationmode-without-authentication
 | `scripts/full_check.sh` | Debug build, then all tests via `TestPlan` | console |
 | `scripts/targeted_bug_pass.sh` | Build, unit tests, UI tests, each with logs and result bundles | `DerivedData/bug-pass/<timestamp>/` |
 | `scripts/smart_pause_test_matrix.sh` | Smart Pause unit tests, then the file and RTSP UI tests `SMART_PAUSE_REPEATS` times each, with pass/fail counts; exports attachments for failed iterations | `DerivedData/smart-pause-tests/<timestamp>/` |
-| `scripts/create_dmg.sh [version] [build_dir]` | Packages `<build_dir>/SharpStream.app` into a DMG, optionally signs/notarizes it | `<build_dir>/SharpStream-<version>.dmg` |
+| `scripts/create_dmg.sh` | Builds Release and packages a DMG; signs/notarizes with `DEVELOPER_ID`, `TEAM_ID`, `NOTARY_PROFILE` (see BUILD.md) | `build/SharpStream-<version>.dmg` + SHA-256 |
 
 All test scripts load `.env` and write `/tmp/sharpstream_smoke.env`.
 

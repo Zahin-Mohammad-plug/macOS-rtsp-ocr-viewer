@@ -61,7 +61,7 @@ open SharpStream.xcodeproj
 See [BUILD.md](BUILD.md) for command-line builds, signing and tests.
 
 ### DMG / Homebrew (not published yet)
-There are no published releases. `scripts/create_dmg.sh` can package a locally built app into a DMG, and `Casks/sharp-stream.rb` is a draft cask whose URLs are placeholders, so `brew install --cask sharp-stream` does not work yet. The app has no auto-update mechanism.
+There are no published releases yet. `scripts/create_dmg.sh` builds and packages a DMG, and signs and notarizes it when given a Developer ID (see [BUILD.md](BUILD.md#distribution-manual-nothing-published-yet)). `Casks/sharp-stream.rb` is ready apart from the per-release checksum, but needs a published release and a tap before `brew install` works. The app has no auto-update mechanism.
 
 ## Dependencies
 

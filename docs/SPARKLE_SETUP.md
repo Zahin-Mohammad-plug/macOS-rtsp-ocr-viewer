@@ -121,7 +121,7 @@ If using GitHub Releases:
 
 Example appcast URL format:
 ```
-https://api.github.com/repos/yourusername/macOS-rtsp-ocr-viewer/releases
+https://api.github.com/repos/Zahin-Mohammad-plug/macOS-rtsp-ocr-viewer/releases
 ```
 
 ## Security Notes

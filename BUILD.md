@@ -76,13 +76,25 @@ Release builds must keep mpv's built-in Lua scripts disabled (see `MPVPlayerWrap
 
 There are no published releases and no auto-update mechanism.
 
-1. Product › Archive, then Distribute App › Developer ID to export a signed app.
-2. Package it:
-   ```bash
-   scripts/create_dmg.sh 1.0.0 build   # expects build/SharpStream.app
-   ```
-   With `CODE_SIGN_IDENTITY` set the script signs the DMG; with `NOTARIZE_APPLE_ID`, `NOTARIZE_PASSWORD` and `NOTARIZE_TEAM_ID` set it notarizes and staples it. The README it places in the DMG still says macOS 14 and a placeholder repository URL.
-3. `Casks/sharp-stream.rb` is a draft Homebrew cask. Its URLs point to a placeholder (`yourusername`) repository and it uses `sha256 :no_check`; update both before publishing.
+`scripts/create_dmg.sh` builds the Release app and packages it as `build/SharpStream-<version>.dmg`. The version and minimum macOS come from the built app's Info.plist.
+
+```bash
+# Unsigned DMG: only opens on the machine that built it (Gatekeeper blocks it elsewhere)
+scripts/create_dmg.sh
+
+# Distributable: needs a paid Apple Developer account
+xcrun notarytool store-credentials sharpstream-notary --apple-id you@example.com --team-id TEAMID   # once
+DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)" TEAM_ID=TEAMID \
+NOTARY_PROFILE=sharpstream-notary scripts/create_dmg.sh
+```
+
+With `DEVELOPER_ID` set, the app and its embedded frameworks are signed with hardened runtime and a secure timestamp, and the DMG is signed. With `NOTARY_PROFILE` also set, the DMG is notarized, stapled and checked with `spctl`. `SKIP_BUILD=1` packages an existing `build/SharpStream.app`. The script prints the DMG's SHA-256.
+
+To publish a release:
+
+1. Upload the DMG to a GitHub release tagged `v<version>`.
+2. Set `version` and `sha256` in `Casks/sharp-stream.rb` (its checksum is a placeholder until then).
+3. Publish the cask in a tap repository (for example `Zahin-Mohammad-plug/homebrew-tap`), so users can run `brew install --cask zahin-mohammad-plug/tap/sharp-stream`.
 
 Sparkle auto-update is not integrated; see [docs/SPARKLE_SETUP.md](docs/SPARKLE_SETUP.md) for a plan.
 
