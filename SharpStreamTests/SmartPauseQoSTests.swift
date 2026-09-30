@@ -11,6 +11,19 @@ import XCTest
 @MainActor
 final class SmartPauseQoSTests: XCTestCase {
 
+    func testTierRatesFollowChosenSamplingRate() {
+        XCTAssertEqual(SmartPauseSamplingTier.normal.fps(target: 4), 4)
+        XCTAssertEqual(SmartPauseSamplingTier.reduced.fps(target: 4), 2)
+        XCTAssertEqual(SmartPauseSamplingTier.normal.fps(target: 12), 12)
+        XCTAssertEqual(SmartPauseSamplingTier.reduced.fps(target: 12), 6)
+        XCTAssertEqual(SmartPauseSamplingTier.minimal.fps(target: 12), 1)
+
+        let manager = StreamManager()
+        manager.smartPauseTargetFPS = 8
+        XCTAssertEqual(manager.smartPauseSamplingFPS, 8)
+        XCTAssertEqual(manager.streamStats.smartPauseSamplingFPS, 8)
+    }
+
     func testDegradeByConsecutiveCaptureLoad() {
         let manager = StreamManager()
         manager.connectionState = .connected

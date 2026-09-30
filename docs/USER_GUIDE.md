@@ -76,7 +76,7 @@ Smart Pause returns to the sharpest frame from the last few seconds. It helps wi
 
 Press Space to resume, or Esc / the × button to dismiss the frozen frame.
 
-Frames are normally sampled 4 times a second. If capturing and scoring takes too long, or macOS reports memory pressure, sampling drops to 2 or 1 per second and recovers when things settle. The Statistics window shows the current rate.
+Frames are sampled 4 times a second by default. If the picture is only sharp for a split second at a time (a camera hunting for focus, a shaky hand, a passing vehicle), raise **Settings › Smart Pause › Sampling rate** to High (8/s): at 4/s a sharp moment shorter than a quarter second can fall between samples. Higher rates cost more CPU. If capturing and scoring takes too long, or macOS reports memory pressure, sampling drops to half the chosen rate, then 1 per second, and recovers when things settle. The Statistics window shows the current rate.
 
 The **Sharpness metric** setting chooses Laplacian (default), Tenengrad or Sobel. They mostly differ on noisy or low-contrast footage.
 
@@ -137,6 +137,7 @@ If SharpStream quits unexpectedly while a stream is playing, the next launch ask
 | Streams | Reconnect automatically when a stream drops | On |
 | Streams | Rewind window | 30 minutes |
 | Smart Pause | Look back | 3.0 s |
+| Smart Pause | Sampling rate | Standard (4 per second) |
 | Smart Pause | Sharpness metric | Laplacian |
 | Smart Pause | Recognize text in the selected frame | On |
 | Text | Enable text recognition | On |

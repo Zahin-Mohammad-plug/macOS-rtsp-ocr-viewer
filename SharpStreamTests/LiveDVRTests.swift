@@ -143,6 +143,29 @@ final class LiveDVRTests: XCTestCase {
         XCTAssertEqual(output.streamHealth, .critical)
     }
 
+    /// HLS fetches a segment, then goes quiet; with a healthy buffer that must
+    /// not read as jitter or loss.
+    func testSegmentedTransportBurstsStayGood() {
+        func run(segmented: Bool) -> TransportMetricsSampler.Output {
+            var sampler = TransportMetricsSampler()
+            let base = Date()
+            var output: TransportMetricsSampler.Output!
+            for second in 0..<8 {
+                output = sampler.ingest(
+                    timestamp: base.addingTimeInterval(Double(second)),
+                    isConnected: true, isConnecting: false, isReconnecting: false,
+                    hasError: false, errorMessage: nil, isPlaying: true, lagSeconds: 3,
+                    rxRateBps: second % 4 == 0 ? 4_000_000 : nil,
+                    bufferLevelSeconds: 6 - Double(second % 4),
+                    frameType: "P", segmentedTransport: segmented
+                )
+            }
+            return output
+        }
+        XCTAssertEqual(run(segmented: true).streamHealth, .good)
+        XCTAssertNotEqual(run(segmented: false).streamHealth, .good)
+    }
+
     func testTransportSamplerMarksGoodWhenStable() {
         var sampler = TransportMetricsSampler()
         let base = Date()

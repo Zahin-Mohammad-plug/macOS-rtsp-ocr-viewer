@@ -29,25 +29,29 @@ enum SmartPauseSamplingTier: String, Equatable {
     case reduced
     case minimal
 
-    var fps: Double {
+    /// `target` is the rate chosen in Settings; QoS halves it, then drops to 1.
+    func fps(target: Double) -> Double {
         switch self {
-        case .normal: return 4.0
-        case .reduced: return 2.0
-        case .minimal: return 1.0
+        case .normal: return target
+        case .reduced: return max(1, (target / 2).rounded())
+        case .minimal: return 1
         }
     }
 
-    var extractionInterval: TimeInterval {
-        1.0 / fps
+    func displayName(target: Double) -> String {
+        let name: String
+        switch self {
+        case .normal: name = "Normal"
+        case .reduced: name = "Reduced"
+        case .minimal: name = "Minimal"
+        }
+        return "\(name) (\(Int(fps(target: target))) FPS)"
     }
 
-    var displayName: String {
-        switch self {
-        case .normal: return "Normal (4 FPS)"
-        case .reduced: return "Reduced (2 FPS)"
-        case .minimal: return "Minimal (1 FPS)"
-        }
-    }
+    static let defaultTargetFPS: Double = 4
+    /// Rates offered in Settings. 12 was tried and measured no better than 8:
+    /// capture cost made QoS halve it to 6 within seconds.
+    static let targetFPSOptions: [Double] = [4, 8]
 }
 
 /// Live DVR position, updated several times a second. Kept in its own observable
@@ -67,6 +71,11 @@ final class StreamManager: ObservableObject {
     @Published var connectionLifecycle: ConnectionLifecycleState = .idle
     @Published var reconnectAttempt: Int = 0
     @Published var smartPauseSamplingTier: SmartPauseSamplingTier = .normal
+    /// Sampling rate chosen in Settings › Smart Pause (QoS may lower it).
+    @Published var smartPauseTargetFPS: Double = SmartPauseSamplingTier.defaultTargetFPS {
+        didSet { if oldValue != smartPauseTargetFPS { applySmartPauseSampling(force: true) } }
+    }
+    var smartPauseSamplingFPS: Double { smartPauseSamplingTier.fps(target: smartPauseTargetFPS) }
     let liveStore = LiveDVRStore()
     var liveDVRState: LiveDVRState {
         get { liveStore.state }
@@ -117,7 +126,7 @@ final class StreamManager: ObservableObject {
     }
 
     init() {
-        streamStats.smartPauseSamplingFPS = smartPauseSamplingTier.fps
+        streamStats.smartPauseSamplingFPS = smartPauseSamplingFPS
     }
 
     deinit {
@@ -483,7 +492,8 @@ final class StreamManager: ObservableObject {
             rxRateBps: snapshot.rawInputRateBps,
             totalBytesRead: snapshot.totalBytesRead,
             bufferLevelSeconds: bufferLevelSeconds,
-            frameType: snapshot.frameType
+            frameType: snapshot.frameType,
+            segmentedTransport: [.hls, .http, .https, .file].contains(currentStream?.protocolType ?? .unknown)
         )
 
         streamStats.rxRateBps = sampled.rxRateBps
@@ -626,13 +636,14 @@ final class StreamManager: ObservableObject {
         heavyLoadCount = 0
         severeLoadCount = 0
         applySmartPauseSampling(force: true)
-        print("🎛️ Smart Pause sampling -> \(newTier.displayName) (\(reason))")
+        print("🎛️ Smart Pause sampling -> \(newTier.displayName(target: smartPauseTargetFPS)) (\(reason))")
     }
 
     private func applySmartPauseSampling(force: Bool = false) {
-        player?.setFrameExtractionInterval(smartPauseSamplingTier.extractionInterval)
-        if force || streamStats.smartPauseSamplingFPS != smartPauseSamplingTier.fps {
-            streamStats.smartPauseSamplingFPS = smartPauseSamplingTier.fps
+        let fps = smartPauseSamplingFPS
+        player?.setFrameExtractionInterval(1 / fps)
+        if force || streamStats.smartPauseSamplingFPS != fps {
+            streamStats.smartPauseSamplingFPS = fps
         }
     }
 

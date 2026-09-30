@@ -71,6 +71,22 @@ final class FocusScorerTests: XCTestCase {
         XCTAssertEqual(focusScorer.recentFrameCount(in: 10, now: now), 41, "Samples are still counted for stats")
     }
 
+    func testCandidateCountIsCappedWhenSharpnessKeepsFalling() {
+        // Focus drifting out at a high sampling rate: every frame is softer
+        // than the one before, so each could still win some window. The store
+        // must stay capped and keep the sharpest (oldest) and newest frames.
+        let now = Date()
+        focusScorer.maxCandidates = 8
+        for index in 0..<30 {
+            let frame = createCheckerboardPixelBuffer(width: 64, height: 48, contrast: UInt8(120 - index * 3))
+            focusScorer.scoreFrame(frame, timestamp: now.addingTimeInterval(-3 + Double(index) * 0.1), sequenceNumber: index)
+        }
+        XCTAssertEqual(focusScorer.retainedFrameBytes(), 8 * CVPixelBufferGetDataSize(createTestPixelBuffer(width: 64, height: 48)))
+        XCTAssertNotNil(focusScorer.frame(sequenceNumber: 0), "sharpest frame kept")
+        XCTAssertNotNil(focusScorer.frame(sequenceNumber: 29), "newest frame kept")
+        XCTAssertEqual(focusScorer.findBestFrame(in: 5, now: now)?.sequenceNumber, 0)
+    }
+
     func testDropsCandidatesOutsideRetentionWindow() {
         let now = Date()
         let sharp = createCheckerboardPixelBuffer(width: 320, height: 240)
@@ -282,7 +298,7 @@ final class FocusScorerTests: XCTestCase {
         return buffer
     }
 
-    private func createCheckerboardPixelBuffer(width: Int, height: Int) -> CVPixelBuffer {
+    private func createCheckerboardPixelBuffer(width: Int, height: Int, contrast: UInt8 = 112) -> CVPixelBuffer {
         let buffer = createTestPixelBuffer(width: width, height: height)
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
@@ -294,7 +310,7 @@ final class FocusScorerTests: XCTestCase {
             for x in 0..<width {
                 let offset = y * bytesPerRow + x * 4
                 let bright = ((x / block) + (y / block)) % 2 == 0
-                let value: UInt8 = bright ? 240 : 15
+                let value: UInt8 = bright ? 128 + min(contrast, 127) : 128 - min(contrast, 127)
                 data?[offset] = value
                 data?[offset + 1] = value
                 data?[offset + 2] = value

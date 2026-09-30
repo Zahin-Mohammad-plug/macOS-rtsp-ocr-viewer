@@ -102,7 +102,7 @@ struct StatsPanel: View {
 
                 StatRow(
                     label: "Smart Pause Sampling",
-                    value: streamManager.smartPauseSamplingTier.displayName
+                    value: streamManager.smartPauseSamplingTier.displayName(target: streamManager.smartPauseTargetFPS)
                 )
 
                 StatRow(label: "Memory Pressure", value: stats.memoryPressure.rawValue)

@@ -523,7 +523,7 @@ final class MPVPlayerWrapper: ObservableObject {
     }
 
     func setFrameExtractionInterval(_ seconds: TimeInterval) {
-        let interval = max(0.1, seconds)
+        let interval = max(1.0 / 15, seconds)
         captureQueue.async { [weak self] in
             guard let self, abs(self.captureInterval - interval) > 0.001 else { return }
             self.captureInterval = interval
@@ -544,8 +544,11 @@ final class MPVPlayerWrapper: ObservableObject {
         captureTimer = nil
         guard frameCallback != nil, !captureShutDown else { return }
 
+        // A fixed period on purpose: it guarantees a sample inside any sharp
+        // moment longer than the interval. Jittered timing was measured on the
+        // OCR ladder and lost that guarantee (134 ms windows at 8 FPS: 100% -> 67%).
         let timer = DispatchSource.makeTimerSource(queue: captureQueue)
-        timer.schedule(deadline: .now() + captureInterval, repeating: captureInterval, leeway: .milliseconds(20))
+        timer.schedule(deadline: .now() + captureInterval, repeating: captureInterval, leeway: .milliseconds(5))
         timer.setEventHandler { [weak self] in self?.captureTick() }
         captureTimer = timer
         timer.resume()

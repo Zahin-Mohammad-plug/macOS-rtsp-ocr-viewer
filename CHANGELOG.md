@@ -8,12 +8,17 @@
 - Live HLS is detected as live (playlist probe), with LIVE badge, rewind and Jump to Live; it was treated as a file.
 - SRT is rejected up front with guidance: the bundled FFmpeg has no libsrt, so it could never connect.
 - Smart Pause sampling no longer drops to 2 FPS because of the capture spike right after connecting.
+- Statistics no longer rate HLS / HTTP streams "Degraded": segment downloads are bursty by design and were read as jitter and loss.
+- Capture timer leeway 20 ms -> 5 ms, so the sampling interval really bounds the gap between samples.
 
 ### Added
 - Live timeline shows how much is buffered ("4:32 buffered"); hover for the maximum and memory used.
 - Rewind buffer capped at 1/8 of physical RAM (max 2 GB) instead of a flat 2 GB.
 - `scripts/stream_matrix.sh` + DEBUG self test: end-to-end checks per source (connect, playback, rewind, Jump to Live, Smart Pause playing and paused, OCR with `EXPECT_TEXT`).
 - `scripts/local_streams.sh`, `scripts/make_demo_clip.sh`, `scripts/range_http_server.py`, `scripts/run.sh`.
+- Settings › Smart Pause › **Sampling rate**: Standard (4/s, default) or High (8/s) for sources that are sharp only for a split second (focus hunting). QoS halves it under load.
+- Smart Pause candidate store capped at 32 frames (the old 4 FPS worst case), so higher sampling can't multiply memory.
+- Self-test modes `soak`, `switch`, `ocrsweep` and `APP_ARGS` overrides in `stream_matrix.sh`; `make_ocr_ladder.sh` difficulty ladder and difficulty knobs on `make_demo_clip.sh`.
 
 ## [Unreleased] - player and pipeline rework
 

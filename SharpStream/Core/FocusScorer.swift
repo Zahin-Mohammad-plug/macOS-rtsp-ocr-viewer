@@ -24,6 +24,9 @@ nonisolated final class FocusScorer: ObservableObject {
 
     /// Candidates older than this (relative to the newest frame) are dropped.
     var candidateRetention: TimeInterval = 8.0
+    /// Upper bound on stored full-resolution frames (the same worst case as
+    /// 4 FPS x 8 s, so a higher sampling rate can't multiply memory).
+    var maxCandidates = 32
     /// Score samples older than this are dropped (used for FPS / counts).
     var sampleRetention: TimeInterval = 30.0
 
@@ -75,6 +78,18 @@ nonisolated final class FocusScorer: ObservableObject {
             let newest = max(frame.timestamp, candidates.last?.timestamp ?? frame.timestamp)
             let candidateCutoff = newest.addingTimeInterval(-candidateRetention)
             candidates.removeAll { $0.timestamp < candidateCutoff }
+            // Over the cap (sharpness falling steadily at a high sampling rate):
+            // drop the frame that is closest in score to its newer neighbour.
+            // The oldest (sharpest) and the newest frame always stay.
+            while candidates.count > max(3, maxCandidates) {
+                var dropIndex = 1
+                var smallestGap = Double.infinity
+                for index in 1..<(candidates.count - 1) {
+                    let gap = candidates[index].score - candidates[index + 1].score
+                    if gap < smallestGap { smallestGap = gap; dropIndex = index }
+                }
+                candidates.remove(at: dropIndex)
+            }
             let sampleCutoff = newest.addingTimeInterval(-sampleRetention)
             if let firstKept = samples.firstIndex(where: { $0.timestamp >= sampleCutoff }), firstKept > 0 {
                 samples.removeFirst(firstKept)

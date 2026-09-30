@@ -112,7 +112,8 @@ sudo automationmodetool enable-automationmode-without-authentication
 | `scripts/run.sh [url \| --demo]` | Debug build, then launch (optionally straight into a stream; `--demo` starts the local demo streams) | — |
 | `scripts/make_demo_clip.sh [out.mp4]` | Generates the OCR demo clip: known text ("PLATE ABC-1234") that is sharp 0.6 s of every 2 s | `build/test-media/demo_ocr.mp4` |
 | `scripts/local_streams.sh start [clip] \| stop \| urls` | Serves a clip (default: demo clip) on 127.0.0.1 as RTSP + HLS (MediaMTX), UDP MPEG-TS and HTTP | `build/local-streams/` |
-| `scripts/stream_matrix.sh <url>...` | End-to-end self test per source: connect, playback, seek / live rewind + Jump to Live, Smart Pause while playing and while paused, OCR (`EXPECT_TEXT=...` to require text) | console table |
+| `scripts/stream_matrix.sh <url>...` | End-to-end self test per source: connect, playback, seek / live rewind + Jump to Live, Smart Pause while playing and while paused, OCR (`EXPECT_TEXT=...` to require text). `MODE=soak SOAK_SECONDS=600` (memory, threads, sampling over time), `MODE=switch URLS=a,b,c` (rapid source switching), `MODE=ocrsweep TRIALS=12` (Smart Pause vs. plain OCR at random moments). `APP_ARGS="-smartPauseSamplingRate 12"` overrides settings | console table |
+| `scripts/make_ocr_ladder.sh` | CAPTCHA-style difficulty ladder of the demo clip: L0–L5 with shorter in-focus moments, more blur, noise, low contrast, smaller text and heavier compression. Knobs are also on `make_demo_clip.sh` (`SHARP`, `BLUR`, `NOISE`, `CONTRAST`, `TEXT_SCALE`, `CRF`) | `build/test-media/ladder/` |
 | `scripts/create_dmg.sh` | Builds Release and packages an unsigned local DMG (`SKIP_BUILD=1` to reuse a build) | `build/SharpStream-<version>.dmg` |
 
 The `.env`-driven scripts load `.env` and write `/tmp/sharpstream_smoke.env`.
@@ -125,6 +126,18 @@ scripts/local_streams.sh start        # demo clip over RTSP / HLS / UDP / HTTP o
 EXPECT_TEXT="ABC-1234" scripts/stream_matrix.sh $(scripts/local_streams.sh urls) ~/Downloads/clip.mp4
 scripts/local_streams.sh stop
 ```
+
+Measured with `MODE=ocrsweep` (RTSP, 12–16 paired trials; "hit" = OCR reads ABC-1234):
+
+| Clip | In focus per 2 s | Plain OCR | Smart Pause 4/s | Smart Pause 8/s |
+|---|---|---|---|---|
+| Ladder L0–L2 | 0.6–0.2 s | 100% | 92–100% | – |
+| Ladder L3 | 134 ms | 0–8% | 67% | 100% |
+| Ladder L4 | 100 ms | 8–17% | 25% | 67% |
+| Ladder L5 | 67 ms | 0% | 42% | 50% |
+| Real footage (handheld paper) | – | 588 / 558 chars | 1084 / 796 chars (RTSP / HLS) | 581 vs 400 chars |
+
+A fixed sampling interval shorter than the sharp moment guarantees a hit; jittered sampling was tried and did worse. Windows shorter than the interval are hit by chance, so 8/s helps focus-hunting sources, while real motion blur leaves long enough sharp stretches for 4/s. 12/s gained nothing: capture cost made QoS halve it.
 
 `stream_matrix.sh` launches the Debug app once per source with `SHARPSTREAM_SELFTEST_REPORT`, a DEBUG-only self test (`SharpStream/App/SelfTest.swift`) that drives the real app and writes a JSON report. With the demo clip, the paused check pauses during a blurred stretch, so it proves Smart Pause looks back from the pause. Real camera URLs work too (read-only). Runs use throwaway storage like the UI tests.
 

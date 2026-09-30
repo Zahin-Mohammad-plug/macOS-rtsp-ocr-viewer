@@ -35,6 +35,7 @@ struct StatusMessage: Identifiable, Equatable {
 
 enum UserDefaultsKey {
     static let lookbackWindow = "lookbackWindow"
+    static let smartPauseSamplingRate = "smartPauseSamplingRate"
     static let autoOCROnSmartPause = "autoOCROnSmartPause"
     static let maxBufferLength = "maxBufferLength"
     static let focusAlgorithm = "focusAlgorithm"
@@ -59,6 +60,7 @@ enum UserDefaultsKey {
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             lookbackWindow: 3.0,
+            smartPauseSamplingRate: SmartPauseSamplingTier.defaultTargetFPS,
             autoOCROnSmartPause: true,
             maxBufferLength: 30,
             focusAlgorithm: FocusAlgorithm.laplacian.rawValue,
@@ -219,6 +221,9 @@ final class AppState: ObservableObject {
            algorithm != focusScorer.algorithm {
             focusScorer.setAlgorithm(algorithm)
         }
+        let samplingRate = defaults.double(forKey: UserDefaultsKey.smartPauseSamplingRate)
+        let targetFPS = SmartPauseSamplingTier.targetFPSOptions.contains(samplingRate) ? samplingRate : SmartPauseSamplingTier.defaultTargetFPS
+        if streamManager.smartPauseTargetFPS != targetFPS { streamManager.smartPauseTargetFPS = targetFPS }
         let ocrEnabled = defaults.bool(forKey: UserDefaultsKey.ocrEnabled)
         if ocrEngine.isEnabled != ocrEnabled { ocrEngine.isEnabled = ocrEnabled }
         let language = defaults.string(forKey: UserDefaultsKey.ocrLanguage) ?? ""

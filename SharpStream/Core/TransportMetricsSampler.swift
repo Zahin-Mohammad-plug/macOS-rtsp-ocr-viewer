@@ -66,7 +66,8 @@ struct TransportMetricsSampler {
         rxRateBps: Int?,
         totalBytesRead: Int64? = nil,
         bufferLevelSeconds: Double?,
-        frameType: String?
+        frameType: String?,
+        segmentedTransport: Bool = false
     ) -> Output {
         pruneEvents(now: timestamp)
 
@@ -79,7 +80,9 @@ struct TransportMetricsSampler {
         if let effectiveRxRateBps, effectiveRxRateBps > 0 {
             samples.append(Sample(timestamp: timestamp, rxRateBps: effectiveRxRateBps, bufferLevelSeconds: bufferLevelSeconds))
             consecutiveNoRxWhilePlaying = 0
-        } else if isPlaying {
+        } else if isPlaying && !(segmentedTransport && (bufferLevelSeconds ?? 0) >= 1) {
+            // HLS/HTTP fetch whole segments and then go quiet; that's only a
+            // problem once the buffer runs low.
             consecutiveNoRxWhilePlaying += 1
         } else {
             consecutiveNoRxWhilePlaying = 0
@@ -99,7 +102,11 @@ struct TransportMetricsSampler {
         let reconnectCount30 = reconnectEvents.filter { timestamp.timeIntervalSince($0) <= 30 }.count
         let failureCount30 = failureEvents.filter { timestamp.timeIntervalSince($0) <= 30 }.count
 
-        let jitterProxyMs = computeJitterProxyMs() ?? (effectiveRxRateBps != nil ? 0 : nil)
+        // Segment downloads make the receive rate and buffer level saw-tooth by
+        // design, so rate variance says nothing about network jitter there.
+        let jitterProxyMs = segmentedTransport
+            ? nil
+            : computeJitterProxyMs() ?? (effectiveRxRateBps != nil ? 0 : nil)
         let packetLossProxyPct = computePacketLossProxyPct(
             isPlaying: isPlaying,
             reconnectCount30: reconnectCount30,

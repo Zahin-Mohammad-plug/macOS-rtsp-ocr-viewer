@@ -110,6 +110,7 @@ private struct StreamSettings: View {
 
 private struct SmartPauseSettings: View {
     @AppStorage(UserDefaultsKey.lookbackWindow) private var lookbackWindow = 3.0
+    @AppStorage(UserDefaultsKey.smartPauseSamplingRate) private var samplingRate = SmartPauseSamplingTier.defaultTargetFPS
     @AppStorage(UserDefaultsKey.focusAlgorithm) private var focusAlgorithm = FocusAlgorithm.laplacian.rawValue
     @AppStorage(UserDefaultsKey.autoOCROnSmartPause) private var autoOCROnSmartPause = true
     @AppStorage(UserDefaultsKey.ocrEnabled) private var ocrEnabled = true
@@ -125,6 +126,10 @@ private struct SmartPauseSettings: View {
                             .frame(width: 44, alignment: .trailing)
                     }
                 }
+                Picker("Sampling rate", selection: $samplingRate) {
+                    Text("Standard (4 per second)").tag(4.0)
+                    Text("High (8 per second)").tag(8.0)
+                }
                 Picker("Sharpness metric", selection: $focusAlgorithm) {
                     ForEach(FocusAlgorithm.allCases, id: \.rawValue) { algorithm in
                         Text(algorithm.displayName).tag(algorithm.rawValue)
@@ -133,7 +138,7 @@ private struct SmartPauseSettings: View {
             } header: {
                 Text("Frame Selection")
             } footer: {
-                Text("Smart Pause (⌘S) pauses on the sharpest frame from the last few seconds. Laplacian is the best default; the others can suit very low-contrast scenes.")
+                Text("Smart Pause (⌘S) pauses on the sharpest frame from the last few seconds. A higher sampling rate catches sharp moments that last only a frame or two (focus hunting, a shaky hand) at the cost of more CPU; it steps down automatically under load. Laplacian is the best default metric; the others can suit very low-contrast scenes.")
                     .foregroundStyle(.secondary)
             }
 
