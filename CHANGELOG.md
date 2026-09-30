@@ -8,7 +8,6 @@
 - Live HLS is detected as live (playlist probe), with LIVE badge, rewind and Jump to Live; it was treated as a file.
 - SRT is rejected up front with guidance: the bundled FFmpeg has no libsrt, so it could never connect.
 - Smart Pause sampling no longer drops to 2 FPS because of the capture spike right after connecting.
-- The app always opens its window at launch, even when saved window state had none.
 
 ### Added
 - Live timeline shows how much is buffered ("4:32 buffered"); hover for the maximum and memory used.

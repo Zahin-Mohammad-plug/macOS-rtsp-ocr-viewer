@@ -19,9 +19,6 @@ struct SharpStreamApp: App {
         }
         .defaultSize(width: 1200, height: 780)
         .windowResizability(.contentMinSize)
-        // Always show the player at launch, even if restored window state has
-        // no windows (otherwise the app could start with nothing on screen).
-        .defaultLaunchBehavior(.presented)
         .commands {
             AppMenu(appState: appState)
         }

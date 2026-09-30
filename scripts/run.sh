@@ -22,8 +22,11 @@ if [[ "$URL" == "--demo" ]]; then
 fi
 
 pkill -f "$APP/Contents/MacOS/SharpStream" 2>/dev/null || true
+sleep 0.5
+# Launch through LaunchServices so the app is activated like a normal launch
+# (running the binary from a background shell leaves it without a window).
 if [[ -n "$URL" ]]; then
-    SHARPSTREAM_OPEN_URL="$URL" "$APP/Contents/MacOS/SharpStream" >/dev/null 2>&1 &
+    open -n "$APP" --env SHARPSTREAM_OPEN_URL="$URL"
 else
     open "$APP"
 fi
