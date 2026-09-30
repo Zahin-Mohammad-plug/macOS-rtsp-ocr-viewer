@@ -7,7 +7,7 @@ Documentation lives in [docs/](docs/README.md).
 ## Features
 
 ### Playback
-- Plays RTSP, SRT, UDP, HLS and HTTP(S) streams and local video files through libmpv (MPVKit).
+- Plays RTSP, UDP, HLS and HTTP(S) streams and local video files through libmpv (MPVKit). SRT is not supported: the bundled FFmpeg (MPVKit) is built without libsrt. Restream SRT sources as RTSP or HLS (for example with MediaMTX).
 - Hardware decoding with VideoToolbox (copy-back mode, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 - Video is drawn with libmpv's render API into an OpenGL layer, so the picture follows window resizes, sidebar/inspector toggles and fullscreen.
 - Play/pause, ±10 s skip, frame stepping (files), speed 0.25×–2×, volume.

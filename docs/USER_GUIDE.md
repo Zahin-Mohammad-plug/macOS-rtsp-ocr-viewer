@@ -22,8 +22,8 @@ Saved streams can be edited or deleted from their context menu. A recent entry c
 
 | Scheme | Notes |
 |---|---|
-| `rtsp://` | Live, rewindable. Uses TCP transport. |
-| `srt://` | Live, rewindable. |
+| `rtsp://`, `rtsps://` | Live, rewindable. TCP transport by default (Settings › Streams). |
+| `srt://` | Not supported; the bundled video library has no SRT. Restream it as RTSP or HLS (e.g. MediaMTX). |
 | `udp://` | Live, rewindable. |
 | `http(s)://…m3u8` (HLS) | Seekable like a file if it has a duration, otherwise live. |
 | `http(s)://` | Same as HLS. |
@@ -55,20 +55,23 @@ Files stay on their last frame when they finish, so you can still seek back or a
 
 ### Live streams and rewind
 
-For live sources the timeline covers what the player currently holds in its cache. The left label shows the wall-clock time at the playhead (12- or 24-hour, see Settings). The right label shows **LIVE** at the live edge, or how far behind live you are (for example `−00:42`).
+For live sources the timeline covers what the player currently holds in its cache. The left label shows the wall-clock time at the playhead (12- or 24-hour, see Settings). On the right, **"4:32 buffered"** tells you how far back you can go right now, followed by **LIVE** at the live edge or how far behind live you are (for example `−00:42`). Hover over the timeline for details, including how much memory the buffer is using.
 
 - Pause, seek or drag the timeline to rewind within the window.
 - **Live** button or **Playback › Jump to Live** (⌘L) returns to the live edge and resumes.
-- The maximum rewind window is set in Settings › General › Rewind window (10, 20, 30 or 40 minutes). The window grows as the stream plays and is limited by that setting and by the cache size, which is estimated from the bitrate and capped at 2 GB.
+- The maximum rewind window is set in Settings › Streams › Rewind window (10, 20, 30 or 40 minutes). The window grows as the stream plays.
+- The buffer is kept in **memory, not on disk**, so disk space doesn't matter. Its size is estimated from the stream's bitrate and capped at 1/8 of your Mac's RAM (at most 2 GB); a high-bitrate stream may therefore hold less than the chosen window. The "buffered" label always shows what is actually available.
 - After a reconnect the old cache is gone, so the rewind window starts over.
+- Rewind and Jump to Live can only land where the stream has a keyframe in the buffer. Cameras normally send one every 1–2 s, which gives precise seeks; sources with keyframes far apart (some phone recordings re-streamed, up to 10 s) need a longer buffer before you can rewind, and seeks snap to the nearest available keyframe.
 
 ## Smart Pause
 
 Smart Pause returns to the sharpest frame from the last few seconds. It helps with motion blur, focus hunting and compression smear.
 
 1. Let the video play for a couple of seconds. Frames are only sampled while playing.
+   Already paused? Smart Pause then looks back from the moment you paused, so it still finds the sharpest frame from just before the pause.
 2. Press ⌘S, click **Smart Pause**, or right-click the video › Smart Pause.
-3. Playback pauses on the sharpest frame from the lookback window (Settings › General, 1–5 s, default 3 s). That frame is frozen on screen and the status line reads "Sharpest frame: 1.2s ago (score …)". On files, an orange marker on the timeline shows where it is.
+3. Playback pauses on the sharpest frame from the lookback window (Settings › Smart Pause, 1–5 s, default 3 s). That frame is frozen on screen and the status line reads "Sharpest frame: 1.2s ago (score …)". On files, an orange marker on the timeline shows where it is.
 4. If **Recognize text after Smart Pause** is on (the default), text recognition runs on that exact frame.
 
 Press Space to resume, or Esc / the × button to dismiss the frozen frame.

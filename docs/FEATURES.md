@@ -3,7 +3,7 @@
 This list covers what the current code does. See [USER_GUIDE.md](USER_GUIDE.md) for how to use each feature.
 
 ## Playback
-- libmpv (MPVKit 0.41) playback of RTSP (over TCP), SRT, UDP, HLS, HTTP(S) and local files
+- libmpv (MPVKit 0.41) playback of RTSP (TCP, UDP or automatic transport), UDP, HLS, HTTP(S) and local files. SRT is not supported: the bundled FFmpeg (MPVKit) is built without libsrt. Restream SRT sources as RTSP or HLS (for example with MediaMTX).
 - VideoToolbox hardware decoding in copy-back mode, with a ~2 s grace period before falling back to software (for live streams joined mid-GOP)
 - Rendering through the libmpv render API (OpenGL, `CAOpenGLLayer`); follows window resizes, sidebar/inspector toggles and fullscreen
 - Play/pause, ±5 s and ±10 s seeks, frame stepping (files), speed 0.25×/0.5×/1×/1.5×/2×, volume

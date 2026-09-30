@@ -109,9 +109,24 @@ sudo automationmodetool enable-automationmode-without-authentication
 | `scripts/full_check.sh` | Debug build, then all tests via `TestPlan` | console |
 | `scripts/targeted_bug_pass.sh` | Build, unit tests, UI tests, each with logs and result bundles | `DerivedData/bug-pass/<timestamp>/` |
 | `scripts/smart_pause_test_matrix.sh` | Smart Pause unit tests, then the file and RTSP UI tests `SMART_PAUSE_REPEATS` times each, with pass/fail counts; exports attachments for failed iterations | `DerivedData/smart-pause-tests/<timestamp>/` |
+| `scripts/run.sh [url \| --demo]` | Debug build, then launch (optionally straight into a stream; `--demo` starts the local demo streams) | — |
+| `scripts/make_demo_clip.sh [out.mp4]` | Generates the OCR demo clip: known text ("PLATE ABC-1234") that is sharp 0.6 s of every 2 s | `build/test-media/demo_ocr.mp4` |
+| `scripts/local_streams.sh start [clip] \| stop \| urls` | Serves a clip (default: demo clip) on 127.0.0.1 as RTSP + HLS (MediaMTX), UDP MPEG-TS and HTTP | `build/local-streams/` |
+| `scripts/stream_matrix.sh <url>...` | End-to-end self test per source: connect, playback, seek / live rewind + Jump to Live, Smart Pause while playing and while paused, OCR (`EXPECT_TEXT=...` to require text) | console table |
 | `scripts/create_dmg.sh` | Builds Release and packages an unsigned local DMG (`SKIP_BUILD=1` to reuse a build) | `build/SharpStream-<version>.dmg` |
 
-All test scripts load `.env` and write `/tmp/sharpstream_smoke.env`.
+The `.env`-driven scripts load `.env` and write `/tmp/sharpstream_smoke.env`.
+
+### Stream matrix (end to end)
+
+```bash
+brew install ffmpeg mediamtx          # once
+scripts/local_streams.sh start        # demo clip over RTSP / HLS / UDP / HTTP on 127.0.0.1
+EXPECT_TEXT="ABC-1234" scripts/stream_matrix.sh $(scripts/local_streams.sh urls) ~/Downloads/clip.mp4
+scripts/local_streams.sh stop
+```
+
+`stream_matrix.sh` launches the Debug app once per source with `SHARPSTREAM_SELFTEST_REPORT`, a DEBUG-only self test (`SharpStream/App/SelfTest.swift`) that drives the real app and writes a JSON report. With the demo clip, the paused check pauses during a blurred stretch, so it proves Smart Pause looks back from the pause. Real camera URLs work too (read-only). Runs use throwaway storage like the UI tests.
 
 ## Smart Pause diagnostics
 

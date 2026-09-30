@@ -14,7 +14,7 @@ Select the **SharpStream** scheme and **My Mac**, then press ⌘R. Xcode resolve
 
 - Drag a video file (MP4, MOV, MKV, TS, …) onto the video area, or
 - **File › Open File…** (⌘O), or
-- copy a stream URL (`rtsp://…`, `srt://…`, `udp://…`, an HLS `.m3u8`, …) and press ⇧⌘V.
+- copy a stream URL (`rtsp://…`, `udp://…`, an HLS `.m3u8`, …) and press ⇧⌘V.
 
 The app is sandboxed. Files picked in the Open panel or dropped on the window work from anywhere; for other paths, keep test videos in `~/Downloads` or `~/Movies`.
 

@@ -133,6 +133,12 @@ nonisolated final class FocusScorer: ObservableObject {
         )
     }
 
+    /// Capture time of the newest scored frame (sampling stops while paused, so
+    /// this is roughly when playback paused).
+    var latestSampleTimestamp: Date? {
+        lock.withLock { samples.last?.timestamp }
+    }
+
     func getCurrentScore() -> Double? {
         lock.withLock { samples.last?.score }
     }

@@ -365,6 +365,9 @@ final class AppState: ObservableObject {
         // Development/testing hook: launch straight into a stream.
         if let url = ProcessInfo.processInfo.environment["SHARPSTREAM_OPEN_URL"], !url.isEmpty {
             connect(urlString: url)
+            #if DEBUG
+            SelfTest.runIfRequested(self)
+            #endif
             return
         }
         guard !Self.isUITesting else { return }
@@ -410,8 +413,10 @@ final class AppState: ObservableObject {
 
     func seek(by offset: TimeInterval) {
         guard let player else { return }
-        // The frozen frame no longer matches the video once it moves.
+        // The frozen frame no longer matches the video once it moves, and
+        // Smart Pause candidates from before the seek are from elsewhere.
         clearAnalysis()
+        focusScorer.reset()
         switch seekMode {
         case .absolute:
             let target = max(0, min(player.duration, player.precisePlaybackTime + offset))
@@ -426,7 +431,9 @@ final class AppState: ObservableObject {
                 showStatus(offset > 0 ? "Already at the live edge." : "Start of the buffer reached.")
                 return
             }
-            if !player.seek(offset: clamped, exact: false) {
+            // Exact: live GOPs can be several seconds long, and a keyframe seek
+            // would land far from the requested position.
+            if !player.seek(offset: clamped, exact: true) {
                 showStatus("Seek failed for this stream.", isError: true)
             }
         case .disabled:
@@ -437,6 +444,7 @@ final class AppState: ObservableObject {
     func seek(toTimelinePosition position: TimeInterval, exact: Bool) {
         guard let player else { return }
         clearAnalysis()
+        focusScorer.reset()
         switch seekMode {
         case .absolute:
             player.seek(to: max(0, min(position, player.duration)), exact: exact)
@@ -455,6 +463,7 @@ final class AppState: ObservableObject {
 
     func jumpToLive() {
         clearAnalysis()
+        focusScorer.reset()
         if !streamManager.seekToLiveEdge() {
             showStatus("Live edge unavailable.")
         }
@@ -493,7 +502,8 @@ final class AppState: ObservableObject {
                     lookbackSeconds: defaults.double(forKey: UserDefaultsKey.lookbackWindow),
                     seekMode: seekMode,
                     currentPlaybackTime: player.precisePlaybackTime,
-                    autoOCREnabled: defaults.bool(forKey: UserDefaultsKey.autoOCROnSmartPause)
+                    autoOCREnabled: defaults.bool(forKey: UserDefaultsKey.autoOCROnSmartPause),
+                    referenceDate: player.isPlaying ? nil : focusScorer.latestSampleTimestamp
                 ),
                 player: player
             )

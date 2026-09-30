@@ -26,14 +26,14 @@ final class StreamURLValidatorTests: XCTestCase {
         XCTAssertNotNil(result.errorMessage)
     }
     
-    func testValidSRTURL() {
-        let result = StreamURLValidator.validate("srt://example.com:9000")
-        XCTAssertTrue(result.isValid, "Valid SRT URL should pass validation")
-    }
-
-    func testValidSRTListenerURL() {
-        let result = StreamURLValidator.validate("srt://192.168.8.199:20001?mode=listener")
-        XCTAssertTrue(result.isValid, "Valid SRT listener URL should pass validation")
+    /// The bundled FFmpeg has no libsrt; SRT must fail up front with guidance
+    /// instead of connecting and reconnecting forever.
+    func testSRTIsRejectedWithGuidance() {
+        for url in ["srt://example.com:9000", "srt://example.com:20001?mode=listener"] {
+            let result = StreamURLValidator.validate(url)
+            XCTAssertFalse(result.isValid)
+            XCTAssertEqual(result.errorMessage, StreamURLValidator.srtUnsupportedMessage)
+        }
     }
     
     func testValidHLSURL() {
@@ -42,7 +42,7 @@ final class StreamURLValidatorTests: XCTestCase {
     }
 
     func testHLSDetectionForHTTPM3U8() {
-        XCTAssertEqual(StreamProtocol.detect(from: "http://192.168.8.10/hls/1_0.m3u8"), .hls)
+        XCTAssertEqual(StreamProtocol.detect(from: "http://192.0.2.10/hls/1_0.m3u8"), .hls)
         XCTAssertEqual(StreamProtocol.detect(from: "https://example.com/live/index.m3u8"), .hls)
     }
 
@@ -158,6 +158,26 @@ final class StreamURLValidatorTests: XCTestCase {
     func testUnknownSchemeIsNotGuessedAsHLS() {
         XCTAssertEqual(StreamProtocol.detect(from: "foohls://example.com/live"), .unknown)
         XCTAssertFalse(StreamURLValidator.validate("foohls://example.com/live").isValid)
+    }
+
+    func testHLSPlaylistLiveVersusVOD() {
+        let live = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:40\n#EXTINF:2,\nseg40.ts\n"
+        let vod = live + "#EXT-X-ENDLIST\n"
+        let vodType = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:2,\nseg0.ts\n"
+        XCTAssertEqual(HLSPlaylistProbe.classify(live), true)
+        XCTAssertEqual(HLSPlaylistProbe.classify(vod), false)
+        XCTAssertEqual(HLSPlaylistProbe.classify(vodType), false)
+        XCTAssertNil(HLSPlaylistProbe.classify("<html>not a playlist</html>"))
+
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\n\nmain_stream.m3u8?session=1\n"
+        XCTAssertEqual(HLSPlaylistProbe.firstVariantURI(in: master), "main_stream.m3u8?session=1")
+    }
+
+    func testLiveHLSIsLiveEvenWithReportedDuration() {
+        // mpv reports a duration for live HLS windows; the playlist probe wins.
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .hls, duration: 12, isLive: true), .liveBuffered)
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .hls, duration: 12, isLive: false), .absolute)
+        XCTAssertEqual(StreamManager.classifySeekMode(protocolType: .hls, duration: 12), .absolute)
     }
 
     func testSessionRecoveryLifecycle() throws {

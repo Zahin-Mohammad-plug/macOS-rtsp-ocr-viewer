@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased] - stream testing round
+
+### Fixed
+- Smart Pause while already paused now looks back from the moment playback paused (it used to pick the frame on screen).
+- Jump to Live and live rewind use exact seeks; on streams with long keyframe intervals they landed up to ~7 s off.
+- Live HLS is detected as live (playlist probe), with LIVE badge, rewind and Jump to Live; it was treated as a file.
+- SRT is rejected up front with guidance: the bundled FFmpeg has no libsrt, so it could never connect.
+- Smart Pause sampling no longer drops to 2 FPS because of the capture spike right after connecting.
+- The app always opens its window at launch, even when saved window state had none.
+
+### Added
+- Live timeline shows how much is buffered ("4:32 buffered"); hover for the maximum and memory used.
+- Rewind buffer capped at 1/8 of physical RAM (max 2 GB) instead of a flat 2 GB.
+- `scripts/stream_matrix.sh` + DEBUG self test: end-to-end checks per source (connect, playback, rewind, Jump to Live, Smart Pause playing and paused, OCR with `EXPECT_TEXT`).
+- `scripts/local_streams.sh`, `scripts/make_demo_clip.sh`, `scripts/range_http_server.py`, `scripts/run.sh`.
+
 ## [Unreleased] - player and pipeline rework
 
 ### Fixed

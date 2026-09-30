@@ -77,6 +77,38 @@ final class SmartPauseCoordinatorTests: XCTestCase {
         XCTAssertEqual(player.pauseCalls, 1)
     }
 
+    /// Paused for longer than the look-back: Smart Pause must search the
+    /// seconds before the pause, not the (frameless) seconds before "now".
+    func testPausedSmartPauseLooksBackFromPauseTime() async {
+        let focusScorer = FocusScorer()
+        let coordinator = makeCoordinator(focusScorer: focusScorer, maxAttempts: 1)
+        let player = MockSmartPausePlayer(currentTime: 20.0)
+
+        let pausedAt = Date().addingTimeInterval(-10)
+        _ = focusScorer.scoreFrame(createSolidPixelBuffer(width: 320, height: 240, value: 120),
+                                   timestamp: pausedAt.addingTimeInterval(-2.5), playbackTime: 17.5, sequenceNumber: 1)
+        _ = focusScorer.scoreFrame(createCheckerboardPixelBuffer(width: 320, height: 240),
+                                   timestamp: pausedAt.addingTimeInterval(-1.5), playbackTime: 18.5, sequenceNumber: 2)
+        _ = focusScorer.scoreFrame(createSolidPixelBuffer(width: 320, height: 240, value: 110),
+                                   timestamp: pausedAt, playbackTime: 20.0, sequenceNumber: 3)
+
+        let result = await coordinator.perform(
+            request: SmartPauseRequest(
+                lookbackSeconds: 3.0,
+                seekMode: .absolute,
+                currentPlaybackTime: 20.0,
+                autoOCREnabled: false,
+                referenceDate: pausedAt
+            ),
+            player: player
+        )
+
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(result.selection?.sequenceNumber, 2, "sharpest frame before the pause")
+        XCTAssertEqual(result.selection?.frameAge ?? -1, 1.5, accuracy: 0.05, "age measured from the pause")
+        XCTAssertEqual(player.seekToCalls.first ?? -1, 18.5, accuracy: 0.01)
+    }
+
     func testAutoRecoveryScoresOnDemandWhenHistoryEmpty() async {
         let focusScorer = FocusScorer()
         let coordinator = makeCoordinator(focusScorer: focusScorer, maxAttempts: 3)

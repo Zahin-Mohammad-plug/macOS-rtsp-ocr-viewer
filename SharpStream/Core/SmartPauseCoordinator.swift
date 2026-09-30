@@ -30,6 +30,9 @@ struct SmartPauseRequest {
     let seekMode: SeekMode
     let currentPlaybackTime: TimeInterval?
     let autoOCREnabled: Bool
+    /// End of the look-back window. When paused, this is when playback stopped,
+    /// so Smart Pause searches the seconds before the pause rather than "now".
+    var referenceDate: Date? = nil
 }
 
 struct SmartPauseResult {
@@ -87,7 +90,7 @@ final class SmartPauseCoordinator {
             seekMode: request.seekMode
         )
 
-        let initialNow = Date()
+        let initialNow = request.referenceDate ?? Date()
         diagnostics.recentFrameCountBeforeRecovery = focusScorer.recentFrameCount(
             in: lookbackSeconds,
             now: initialNow

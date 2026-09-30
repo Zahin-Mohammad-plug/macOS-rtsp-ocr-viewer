@@ -55,6 +55,8 @@ enum SmartPauseSamplingTier: String, Equatable {
 /// StreamManager.
 final class LiveDVRStore: ObservableObject {
     @Published var state = LiveDVRState.empty()
+    /// Memory held by mpv's demuxer cache (the rewind buffer), when known.
+    @Published var bufferBytes: Int64?
 }
 
 final class StreamManager: ObservableObject {
@@ -81,6 +83,9 @@ final class StreamManager: ObservableObject {
     private var metadataTimer: Timer?
     private var liveStateTimer: Timer?
     private var stableTimer: Timer?
+    private var fileLoadedAt: Date?
+    /// Result of probing an HLS playlist: true = live, false = VOD, nil = unknown.
+    private var hlsIsLive: Bool?
     private var lastRecoveryRefresh = Date.distantPast
     private var transportMetricsSampler = TransportMetricsSampler()
     private var reconnectAttempts = 0
@@ -153,6 +158,25 @@ final class StreamManager: ObservableObject {
         focusScorer?.reset()
         resetLiveDVRState()
         seekMode = Self.classifySeekMode(protocolType: stream.protocolType, duration: nil)
+        hlsIsLive = nil
+        if stream.protocolType == .hls {
+            let url = stream.url
+            Task { [weak self] in
+                // Servers can take several seconds to publish the first
+                // segments (long keyframe intervals), so retry for a while.
+                var live: Bool?
+                for attempt in 0..<5 where live == nil {
+                    if attempt > 0 { try? await Task.sleep(nanoseconds: 3_000_000_000) }
+                    guard self?.currentStream?.url == url else { return }
+                    live = await HLSPlaylistProbe.isLive(url)
+                }
+                guard let self, self.currentStream?.url == url else { return }
+                self.hlsIsLive = live
+                guard let player = self.player, self.connectionState == .connected else { return }
+                self.seekMode = Self.classifySeekMode(protocolType: .hls, duration: player.duration, isLive: live)
+                player.setKeepOpenAtEnd(self.seekMode == .absolute)
+            }
+        }
         invalidateTimers()
 
         // Each connection gets a fresh player (and, via the view's identity, a
@@ -335,6 +359,7 @@ final class StreamManager: ObservableObject {
         streamStats.streamHealthReason = "Connected"
         reconnectAttempt = 0
         connectionLifecycle = .fileLoaded
+        fileLoadedAt = Date()
         // Only forgive past failures once the stream has stayed up for a while;
         // resetting on every load let a connect-then-drop source retry forever.
         stableTimer?.invalidate()
@@ -347,7 +372,7 @@ final class StreamManager: ObservableObject {
         }
 
         guard let player else { return }
-        seekMode = Self.classifySeekMode(protocolType: currentStream?.protocolType ?? .unknown, duration: player.duration)
+        seekMode = Self.classifySeekMode(protocolType: currentStream?.protocolType ?? .unknown, duration: player.duration, isLive: hlsIsLive)
         // Finite media holds its last frame at the end; live sources must end
         // so a dropped connection triggers a reconnect.
         player.setKeepOpenAtEnd(seekMode == .absolute)
@@ -433,7 +458,7 @@ final class StreamManager: ObservableObject {
             frameRate: snapshot.frameRate,
             codecName: snapshot.codecName
         )
-        let newSeekMode = Self.classifySeekMode(protocolType: currentStream?.protocolType ?? .unknown, duration: player.duration)
+        let newSeekMode = Self.classifySeekMode(protocolType: currentStream?.protocolType ?? .unknown, duration: player.duration, isLive: hlsIsLive)
         if newSeekMode != seekMode {
             seekMode = newSeekMode
         }
@@ -509,8 +534,13 @@ final class StreamManager: ObservableObject {
         }
     }
 
-    static func classifySeekMode(protocolType: StreamProtocol, duration: TimeInterval?) -> SeekMode {
+    /// `isLive` (from probing an HLS playlist) overrides the duration heuristic:
+    /// mpv reports a duration for live HLS windows too.
+    static func classifySeekMode(protocolType: StreamProtocol, duration: TimeInterval?, isLive: Bool? = nil) -> SeekMode {
         let knownDuration = (duration ?? 0) > 0
+        if isLive == true, protocolType == .hls || protocolType == .http || protocolType == .https {
+            return .liveBuffered
+        }
 
         switch protocolType {
         case .rtsp, .srt, .udp:
@@ -547,7 +577,10 @@ final class StreamManager: ObservableObject {
             return
         }
 
-        let load = pipelineLoad ?? 0
+        // Capture is slow for the first moments of a stream (decoder warm-up,
+        // buffer pool allocation); don't let that spike throttle sampling.
+        let inStartupGrace = fileLoadedAt.map { Date().timeIntervalSince($0) < 6 } ?? false
+        let load = inStartupGrace ? 0 : (pipelineLoad ?? 0)
         if load > 0.7 {
             severeLoadCount += 1
             heavyLoadCount += 1
@@ -673,8 +706,13 @@ final class StreamManager: ObservableObject {
 
     private static func estimateBackBufferBytes(maxWindowSeconds: TimeInterval, bitrate: Int?) -> Int64? {
         guard maxWindowSeconds > 0 else { return nil }
-        let fallback: Int64 = 512 * 1024 * 1024
-        let maxBytes: Int64 = 2 * 1024 * 1024 * 1024
+        // The rewind buffer lives in RAM (not on disk): cap it at 1/8 of the
+        // Mac's memory (1 GB on an 8 GB Mac) and never above 2 GB. A high-
+        // bitrate stream then keeps less than the preferred window; the
+        // timeline shows how much is actually available.
+        let physical = Int64(ProcessInfo.processInfo.physicalMemory)
+        let maxBytes: Int64 = min(2 * 1024 * 1024 * 1024, max(256 * 1024 * 1024, physical / 8))
+        let fallback: Int64 = min(512 * 1024 * 1024, maxBytes)
         let estimated: Int64
         if let bitrate, bitrate > 0 {
             estimated = Int64(Double(bitrate) / 8.0 * maxWindowSeconds * 1.2)
@@ -712,7 +750,7 @@ final class StreamManager: ObservableObject {
     func seekToLiveEdge() -> Bool {
         guard seekMode == .liveBuffered, let player else { return false }
         if let edge = player.liveCacheMetrics()?.liveEdgeTime, edge.isFinite, edge > 0 {
-            let ok = player.seek(to: max(0, edge - 0.5), exact: false)
+            let ok = player.seek(to: max(0, edge - 0.5), exact: true)
             if ok { player.play() }
             return ok
         }
@@ -721,7 +759,7 @@ final class StreamManager: ObservableObject {
             player.play()
             return true
         }
-        let ok = player.seek(offset: lag, exact: false)
+        let ok = player.seek(offset: lag, exact: true)
         if ok { player.play() }
         return ok
     }
@@ -736,10 +774,10 @@ final class StreamManager: ObservableObject {
         // Anchor on the live edge: mpv's cache can hold more than the displayed
         // window, so its oldest timestamp is not where the slider starts.
         if let metrics = player.liveCacheMetrics(), let edge = metrics.liveEdgeTime, edge.isFinite {
-            return player.seek(to: max(0, edge - (window - clamped)), exact: false)
+            return player.seek(to: max(0, edge - (window - clamped)), exact: true)
         }
         let targetLag = window - clamped
-        return player.seek(offset: liveDVRState.lagSeconds - targetLag, exact: false)
+        return player.seek(offset: liveDVRState.lagSeconds - targetLag, exact: true)
     }
 
     func updateLiveDVRState(
@@ -759,6 +797,10 @@ final class StreamManager: ObservableObject {
 
         let playbackTime = currentPlaybackTime ?? 0
         let metrics = player?.liveCacheMetrics()
+        let bytes = metrics?.totalBytesRead
+        if liveStore.bufferBytes.map({ abs($0 - (bytes ?? 0)) > 1_000_000 }) ?? (bytes != nil) {
+            liveStore.bufferBytes = bytes
+        }
         let windowSeconds = Self.resolveLiveWindowSeconds(
             mpvWindow: metrics?.windowSeconds,
             bufferDuration: 0,

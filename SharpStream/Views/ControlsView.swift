@@ -35,6 +35,7 @@ struct TimelineRow: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var streamManager: StreamManager
     @AppStorage(UserDefaultsKey.use24HourClock) private var use24HourClock = false
+    @AppStorage(UserDefaultsKey.maxBufferLength) private var maxBufferMinutes = 30
     @ObservedObject var player: MPVPlayerWrapper
     @ObservedObject var clock: PlaybackClock
     @ObservedObject var liveStore: LiveDVRStore
@@ -103,6 +104,7 @@ struct TimelineRow: View {
                     onEditingChanged: handleEditingChanged
                 )
                 .disabled(!canScrub)
+                .help(timelineHelp)
                 .accessibilityIdentifier("timelineSlider")
 
                 if let marker = smartPauseMarker {
@@ -142,17 +144,14 @@ struct TimelineRow: View {
         switch mode {
         case .liveBuffered:
             let lag = isScrubbing ? max(0, live.windowSeconds - scrubValue) : live.lagSeconds
-            if lag <= 1.5 {
-                Label("LIVE", systemImage: "dot.radiowaves.left.and.right")
-                    .labelStyle(.titleAndIcon)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.red)
-                    .accessibilityIdentifier("liveEdgeLabel")
-            } else {
-                Text("−" + Self.format(lag))
+            HStack(spacing: 8) {
+                // How far back you can go right now.
+                Text(Self.format(live.windowSeconds) + " buffered")
+                    .font(.caption)
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("liveEdgeLabel")
+                    .foregroundStyle(.tertiary)
+                    .accessibilityIdentifier("rewindBufferLabel")
+                liveEdgeIndicator(lag: lag)
             }
         case .absolute:
             Text(Self.format(player.duration))
@@ -164,6 +163,32 @@ struct TimelineRow: View {
                 .monospacedDigit()
                 .foregroundStyle(.tertiary)
         }
+    }
+
+    @ViewBuilder
+    private func liveEdgeIndicator(lag: TimeInterval) -> some View {
+        if lag <= 1.5 {
+            Label("LIVE", systemImage: "dot.radiowaves.left.and.right")
+                .labelStyle(.titleAndIcon)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.red)
+                .accessibilityIdentifier("liveEdgeLabel")
+        } else {
+            Text("−" + Self.format(lag))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("liveEdgeLabel")
+        }
+    }
+
+    private var timelineHelp: String {
+        guard mode == .liveBuffered else { return "" }
+        var text = "Rewind available: \(Self.format(live.windowSeconds)) of up to \(maxBufferMinutes) min"
+        if let bytes = liveStore.bufferBytes, bytes > 0 {
+            text += " · buffer \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .memory)) in memory"
+        }
+        text += "\nThe window grows as the stream plays; change the maximum in Settings › Streams."
+        return text
     }
 
     private var smartPauseMarker: Double? {

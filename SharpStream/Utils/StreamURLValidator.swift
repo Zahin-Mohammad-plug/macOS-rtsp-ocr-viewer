@@ -8,6 +8,9 @@
 import Foundation
 
 struct StreamURLValidator {
+    static let srtUnsupportedMessage =
+        "SRT isn't supported: the bundled video library is built without SRT. Restream it as RTSP or HLS (for example with MediaMTX) and open that URL instead."
+
     static func validate(_ urlString: String) -> ValidationResult {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -34,9 +37,9 @@ struct StreamURLValidator {
             }
             
         case .srt:
-            if url?.host == nil {
-                return .invalid("SRT URL must include a host address")
-            }
+            // The bundled FFmpeg (MPVKit) is built without libsrt, so SRT can't
+            // play; fail clearly instead of looping on reconnects.
+            return .invalid(Self.srtUnsupportedMessage)
             
         case .udp:
             if url?.host == nil {
