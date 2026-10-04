@@ -12,6 +12,7 @@
 
 #if DEBUG
 import AppKit
+import CoreVideo
 
 @MainActor
 enum SelfTest {
@@ -25,8 +26,77 @@ enum SelfTest {
         case "soak": runSoak(app, path: path)
         case "switch": runSwitch(app, path: path)
         case "ocrsweep": runOCRSweep(app, path: path)
+        case "latency": runLatency(app, path: path)
         default: runStandard(app, path: path)
         }
+    }
+
+    // MARK: - Latency: decode the clock bar code (scripts/latency) from frames
+
+    /// Each frame of the latency clock carries the epoch ms at which it was
+    /// drawn as a 40-cell bar code. now - stamp = end-to-end latency up to the
+    /// decoded frame. Measured while playing, then again right after Jump to
+    /// Live, to separate accumulated lag from the pipeline itself.
+    private static func runLatency(_ app: AppState, path: String) {
+        Task { @MainActor in
+            let env = ProcessInfo.processInfo.environment
+            let seconds = Double(env["SHARPSTREAM_SELFTEST_SECONDS"] ?? "") ?? 20
+            var report: [String: Any] = ["mode": "latency", "url": StreamURLRedactor.redacted(env["SHARPSTREAM_OPEN_URL"] ?? ""),
+                                         "mpvOptions": env["SHARPSTREAM_MPV_OPTIONS"] ?? ""]
+            var checks: [[String: Any]] = []
+            let manager = app.streamManager
+            let connected = await waitUntil(timeout: 25) { manager.connectionState == .connected }
+            checks.append(["name": "connects", "passed": connected, "detail": "\(manager.connectionState)"])
+            guard connected, let player = app.player else { finish(report, checks, path); return }
+            await sleep(4)
+
+            func measure(for duration: TimeInterval) async -> [String: Any] {
+                var latencies: [Double] = [], ahead: [Double] = [], lags: [Double] = []
+                let end = Date().addingTimeInterval(duration)
+                while Date() < end {
+                    if let frame = await player.captureFrame(), let stamp = decodeClock(frame) {
+                        latencies.append(Date().timeIntervalSince1970 * 1000 - stamp)
+                    }
+                    let snapshot = player.getTransportMetricsSnapshot()
+                    if let cached = snapshot.cacheDurationSeconds { ahead.append(cached) }
+                    lags.append(manager.liveDVRState.lagSeconds)
+                    await sleep(0.25)
+                }
+                func median(_ values: [Double]) -> Double {
+                    values.isEmpty ? -1 : values.sorted()[values.count / 2]
+                }
+                return ["latencyMs": median(latencies), "latencyMinMs": latencies.min() ?? -1,
+                        "latencyMaxMs": latencies.max() ?? -1, "decoded": latencies.count,
+                        "cacheAheadS": median(ahead), "lagS": median(lags)]
+            }
+
+            let steady = await measure(for: seconds)
+            report["steady"] = steady
+            app.jumpToLive()
+            await sleep(2)
+            report["afterJumpToLive"] = await measure(for: min(10, seconds))
+            checks.append(["name": "clock decoded", "passed": (steady["decoded"] as? Int ?? 0) > 5,
+                           "detail": "\(steady["decoded"] ?? 0) frames"])
+            finish(report, checks, path)
+        }
+    }
+
+    /// Bar code: 40 cells x 16 px on row 324 of a 640x360 frame, MSB first.
+    nonisolated private static func decodeClock(_ frame: CVPixelBuffer) -> Double? {
+        guard CVPixelBufferGetWidth(frame) == 640, CVPixelBufferGetHeight(frame) == 360 else { return nil }
+        CVPixelBufferLockBaseAddress(frame, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(frame)?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        let row = base + 324 * CVPixelBufferGetBytesPerRow(frame)
+        var value: Int64 = 0
+        for cell in 0..<40 {
+            value = (value << 1) | (row[(cell * 16 + 8) * 4 + 1] < 128 ? 1 : 0)
+        }
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        var stamp = (now & ~((Int64(1) << 40) - 1)) | value
+        if stamp > now + 1000 { stamp -= Int64(1) << 40 }
+        let latency = now - stamp
+        return latency >= 0 && latency < 60_000 ? Double(stamp) : nil
     }
 
     // MARK: - OCR sweep: Smart Pause vs. recognizing whatever is on screen

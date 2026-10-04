@@ -761,7 +761,9 @@ final class StreamManager: ObservableObject {
     func seekToLiveEdge() -> Bool {
         guard seekMode == .liveBuffered, let player else { return false }
         if let edge = player.liveCacheMetrics()?.liveEdgeTime, edge.isFinite, edge > 0 {
-            let ok = player.seek(to: max(0, edge - 0.5), exact: true)
+            // Close to the newest cached frame: a 0.5 s margin plus mpv's
+            // rebuffer-after-seek kept "LIVE" about 1 s behind the source.
+            let ok = player.seek(to: max(0, edge - 0.15), exact: true)
             if ok { player.play() }
             return ok
         }

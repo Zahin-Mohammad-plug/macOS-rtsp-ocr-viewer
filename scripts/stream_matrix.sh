@@ -21,6 +21,9 @@
 #   MODE=ocrsweep TRIALS=12 [EXPECT_TEXT=..] scripts/stream_matrix.sh <url>   Smart Pause vs plain OCR
 #
 # APP_ARGS passes setting overrides, e.g. APP_ARGS="-smartPauseSamplingRate 12"
+# MPV_OPTIONS passes raw mpv options (DEBUG builds), e.g. MPV_OPTIONS="cache-pause=no;audio-buffer=0"
+#   MODE=latency SOAK_SECONDS=20 scripts/stream_matrix.sh rtsp://127.0.0.1:8554/clock
+#   (needs scripts/latency/publish_clock.sh running)
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/DerivedData/Build/Products/Debug/SharpStream.app/Contents/MacOS/SharpStream"
@@ -36,7 +39,7 @@ for source in "$@"; do
     SHARPSTREAM_UI_TESTING=1 SHARPSTREAM_OPEN_URL="$source" SHARPSTREAM_SELFTEST_REPORT="$report" \
     SHARPSTREAM_SELFTEST_EXPECT_TEXT="${EXPECT_TEXT:-}" SHARPSTREAM_SELFTEST_MODE="${MODE:-standard}" \
     SHARPSTREAM_SELFTEST_SECONDS="${SOAK_SECONDS:-300}" SHARPSTREAM_SELFTEST_URLS="${URLS:-}" \
-    SHARPSTREAM_SELFTEST_TRIALS="${TRIALS:-12}" \
+    SHARPSTREAM_SELFTEST_TRIALS="${TRIALS:-12}" SHARPSTREAM_MPV_OPTIONS="${MPV_OPTIONS:-}" \
         "$APP" -ApplePersistenceIgnoreState YES ${APP_ARGS:-} >/dev/null 2>&1 &
     pid=$!
     limit=$(( ${SOAK_SECONDS:-0} + ${TRIALS:-0} * 15 + 240 ))
@@ -59,6 +62,11 @@ if "threads" in r and isinstance(r["threads"], dict):
 if "seekMode" in r: print(f"    {r.get('seekMode','?')}  {r.get('resolution','?')} @ {r.get('frameRate',0):.0f} fps  {r.get('codec','?')}"
       f"  sampling {r.get('samplingFPS',0):.1f} fps  capture load {r.get('captureLoad',0)*100:.0f}%"
       + (f"  rewind {r['rewindWindowSeconds']:.0f} s" if 'rewindWindowSeconds' in r else ""))
+for key in ("steady", "afterJumpToLive"):
+    if key in r:
+        m = r[key]
+        print(f"    {key:16} latency {m['latencyMs']:6.0f} ms (min {m['latencyMinMs']:.0f}, max {m['latencyMaxMs']:.0f}, n={m['decoded']})"
+              f"  buffered ahead {m['cacheAheadS']:.2f} s  behind live edge {m['lagS']:.2f} s")
 if "rows" in r:
     for row in r["rows"]:
         print(f"    plain {'HIT ' if row['baselineHit'] else '    '}{row['baselineChars']:4} chars (score {row['baselineScore']:6.0f})"

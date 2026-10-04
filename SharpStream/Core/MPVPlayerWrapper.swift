@@ -178,6 +178,16 @@ final class MPVPlayerWrapper: ObservableObject {
             mpv_set_option_string(handle, "vo", "libmpv")
             mpv_set_option_string(handle, "ao", "coreaudio")
         }
+
+        #if DEBUG
+        // Tuning experiments without code changes: SHARPSTREAM_MPV_OPTIONS="a=1;b=2".
+        if let overrides = ProcessInfo.processInfo.environment["SHARPSTREAM_MPV_OPTIONS"] {
+            for pair in overrides.split(separator: ";") {
+                let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+                if parts.count == 2 { mpv_set_option_string(handle, parts[0], parts[1]) }
+            }
+        }
+        #endif
     }
 
     /// Called by the video layer once its render context exists.
@@ -415,6 +425,15 @@ final class MPVPlayerWrapper: ObservableObject {
             return
         }
         setProperty("keep-open", keepOpenAtEnd ? "yes" : "no")
+        // FFmpeg's stream probing buffers up to several seconds before
+        // playback starts, and mpv then plays that backlog at 1x for the rest
+        // of the session. RTSP announces its streams in the SDP, so a short
+        // probe is safe there; measured 1.46 s -> 0.28 s on a local camera
+        // path (scripts/latency). Other sources keep FFmpeg's defaults: UDP
+        // MPEG-TS joined mid-stream needs the full probe to find its streams.
+        let isRTSP = url.lowercased().hasPrefix("rtsp://") || url.lowercased().hasPrefix("rtsps://")
+        setProperty("demuxer-lavf-analyzeduration", isRTSP ? "0.1" : "0")
+        setProperty("demuxer-lavf-probe-info", isRTSP ? "nostreams" : "auto")
         let result = command(["loadfile", url, "replace"])
         if result < 0 {
             reportFailure("Failed to load stream: \(Self.errorString(result))")

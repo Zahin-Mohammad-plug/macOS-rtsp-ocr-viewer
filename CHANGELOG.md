@@ -10,6 +10,7 @@
 - Smart Pause sampling no longer drops to 2 FPS because of the capture spike right after connecting.
 - Statistics no longer rate HLS / HTTP streams "Degraded": segment downloads are bursty by design and were read as jitter and loss.
 - Capture timer leeway 20 ms -> 5 ms, so the sampling interval really bounds the gap between samples.
+- RTSP latency: FFmpeg's stream probing buffered ~1.2 s that mpv then played at 1x for the whole session. RTSP now uses a short probe (its streams are in the SDP): measured 1.46 s -> ~0.28 s end to end on a local path (floor 0.07 s). Jump to Live lands 0.15 s (was 0.5 s) before the newest cached frame.
 
 ### Added
 - Live timeline shows how much is buffered ("4:32 buffered"); hover for the maximum and memory used.
